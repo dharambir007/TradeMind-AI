@@ -11,10 +11,17 @@ html, body {
   min-height: 100vh;
   margin: 0;
   padding: 0;
-  background: #030712;
+  background: #06080f;
+  color: #f0f2f5;
 }
 
 #root {
   width: 100%;
   min-height: 100vh;
+}
+
+/* Selection */
+::selection {
+  background: rgba(0, 212, 255, 0.2);
+  color: #fff;
 }

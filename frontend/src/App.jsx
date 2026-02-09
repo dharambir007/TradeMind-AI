@@ -1,16 +1,27 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route } from 'react-router-dom'
-import LandingPage from './pages/LandingPage'
-import LoginPage from './pages/LoginPage'
-import SignupPage from './pages/SignupPage'
 import './App.css'
+
+const LandingPage = lazy(() => import('./pages/LandingPage'))
+const LoginPage = lazy(() => import('./pages/LoginPage'))
+const SignupPage = lazy(() => import('./pages/SignupPage'))
+const UserDashboard = lazy(() => import('./pages/UserDashboard'))
+
+const RouteFallback = () => (
+  <div style={{ minHeight: '100vh', background: '#06080f' }} />
+)
 
 function App() {
   return (
-    <Routes>
-      <Route path="/" element={<LandingPage />} />
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/signup" element={<SignupPage />} />
-    </Routes>
+    <Suspense fallback={<RouteFallback />}>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+        <Route path="/dashboard/:symbol" element={<UserDashboard />} />
+        <Route path="/dashboard" element={<UserDashboard />} />
+      </Routes>
+    </Suspense>
   )
 }
 
