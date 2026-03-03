@@ -1,0 +1,71 @@
+# ── Environment (secrets) ──────────────────────
+.env
+.env.local
+.env.development
+.env.production
+!.env.example
+
+# ── Dataset CSV files (large, not needed in Git) ─
+*.csv
+*.parquet
+BANK_NIFTY_data/
+NIFTY_data/
+
+# ── Model & output artifacts ───────────────────
+output/
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+*.onnx
+*.pb
+*.png
+
+# ── Python cache / bytecode ────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+
+# ── Virtual environments ───────────────────────
+.venv/
+venv/
+env/
+.conda/
+
+# ── Build / Distribution ──────────────────────
+dist/
+build/
+*.whl
+*.tar.gz
+*.tgz
+*.zip
+
+# ── IDE / Editor ───────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ── Logs ───────────────────────────────────────
+logs/
+*.log
+
+# ── Misc ───────────────────────────────────────
+.cache/
+.temp/
+.tmp/
+
+# ── Docs kept but duplicates removed ──────────
+PROJECT_SUMMARY (1).txt
