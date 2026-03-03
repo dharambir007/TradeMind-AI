@@ -1,43 +1,96 @@
-# OS/Editor artifacts
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/dist-ssr/
+backend/dist/
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+frontend/.env
+frontend/.env.local
+frontend/.env.production
+backend/.env
+backend/.env.local
+backend/.env.production
+Stocks Dataset/.env
+!.env.example
+
+# Dataset files (large CSV/parquet — not needed in git)
+Stocks Dataset/BANK_NIFTY_data/
+Stocks Dataset/NIFTY_data/
+Stocks Dataset/output/
+*.csv
+*.parquet
+
+# ML model files (large binaries)
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+*.onnx
+*.pb
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+*.whl
+.venv/
+venv/
+env/
+.conda/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS
 .DS_Store
 Thumbs.db
-.vscode/
-!.vscode/extensions.json
-.idea/
-*.sw?
+ehthumbs.db
+Desktop.ini
 
-# Node logs
+# Logs
 logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-# Environment files
-.env
-.env.*
-!.env.example
+# Testing
+coverage/
+.nyc_output/
 
-# Root-level dependencies
-node_modules/
-
-# Backend
-/backend/node_modules/
-/backend/coverage/
-/backend/logs/
-/backend/.env*
-/backend/dist/
-
-# Frontend
-/frontend/node_modules/
-/frontend/dist/
-/frontend/.env*
-/frontend/.vite/
-/frontend/coverage/
-/frontend/dist-ssr/
-/frontend/.DS_Store
-
-# Build artifacts
+# Misc
+*.tgz
+*.tar.gz
+*.zip
+.cache/
+.temp/
+.tmp/
 *.local
