@@ -22,13 +22,13 @@ frontend/.env.production
 backend/.env
 backend/.env.local
 backend/.env.production
-Stocks Dataset/.env
+ML MODEL/.env
 !.env.example
 
 # Dataset files (large CSV/parquet — not needed in git)
-Stocks Dataset/BANK_NIFTY_data/
-Stocks Dataset/NIFTY_data/
-Stocks Dataset/output/
+ML MODEL/BANK_NIFTY_data/
+ML MODEL/NIFTY_data/
+ML MODEL/output/
 *.csv
 *.parquet
 
