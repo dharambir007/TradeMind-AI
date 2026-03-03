@@ -2,10 +2,6 @@ import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { useNavigate } from "react-router-dom";
 import apiClient from "../services/api";
 
-/**
- * Groww-style search bar with instant dropdown suggestions.
- * Debounces keystrokes and shows symbol + company name + sector badge.
- */
 const SearchBar = memo(() => {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -49,7 +45,10 @@ const SearchBar = memo(() => {
       const res = await apiClient.get(`/stocks/search?q=${encodeURIComponent(q.trim())}`, {
         signal: controller.signal,
       });
-      setResults(res.data || []);
+      const safeResults = Array.isArray(res.data)
+        ? res.data.filter((item) => typeof item?.symbol === "string")
+        : [];
+      setResults(safeResults);
       setOpen(true);
       setActiveIdx(-1);
     } catch (err) {

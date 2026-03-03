@@ -1,4 +1,5 @@
 import { useState, useEffect, memo } from 'react';
+import { motion } from 'framer-motion';
 import { getMarketStatus } from '../services/marketService';
 
 const MarketStatus = memo(() => {
@@ -28,14 +29,26 @@ const MarketStatus = memo(() => {
       display: "inline-flex", alignItems: "center", gap: "8px",
       fontSize: "12px", color: "#8b93a7",
     }}>
-      <span style={{
-        width: "6px", height: "6px", borderRadius: "50%",
-        background: isOpen ? "#10b981" : "#ef4444",
-        boxShadow: isOpen ? "0 0 6px rgba(16,185,129,0.4)" : "0 0 6px rgba(239,68,68,0.4)",
-        animation: isOpen ? "pulse-glow 2s ease-in-out infinite" : "none",
-      }} />
+      <motion.span
+        animate={isOpen ? {
+          scale: [1, 1.3, 1],
+          opacity: [1, 0.6, 1],
+          boxShadow: [
+            `0 0 4px ${isOpen ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+            `0 0 10px ${isOpen ? "rgba(16,185,129,0.5)" : "rgba(239,68,68,0.5)"}`,
+            `0 0 4px ${isOpen ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+          ],
+        } : {}}
+        transition={isOpen ? { duration: 2, repeat: Infinity, ease: "easeInOut" } : {}}
+        style={{
+          width: "6px", height: "6px", borderRadius: "50%",
+          display: "inline-block",
+          background: isOpen ? "#10b981" : "#ef4444",
+          boxShadow: isOpen ? "0 0 6px rgba(16,185,129,0.4)" : "0 0 6px rgba(239,68,68,0.4)",
+        }}
+      />
       <span style={{ color: "#e0e4ec", fontWeight: 500 }}>{status.message}</span>
-      <span style={{ color: "#3b4260", fontSize: "11px" }}>{status.currentTime} IST</span>
+      <span style={{ color: "#3b4260", fontSize: "11px", fontFeatureSettings: '"tnum" 1' }}>{status.currentTime} IST</span>
     </div>
   );
 });

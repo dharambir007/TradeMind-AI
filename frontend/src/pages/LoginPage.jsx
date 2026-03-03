@@ -71,6 +71,16 @@ const LoginPage = () => {
         }} />
       </div>
 
+      {/* Responsive helper */}
+      <style>{`
+        .lg-show { display: none !important; }
+        .lg-hide { display: block; }
+        @media (min-width: 1024px) {
+          .lg-show { display: flex !important; }
+          .lg-hide { display: none !important; }
+        }
+      `}</style>
+
       {/* Left panel — branding */}
       <div style={{
         display: 'none', flex: 1, position: 'relative', overflow: 'hidden',

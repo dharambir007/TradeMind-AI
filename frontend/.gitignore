@@ -7,10 +7,23 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# ── Dependencies ────────────────────────────────
 node_modules
+package-lock.json
+
+# ── Build / Output ─────────────────────────────
 dist
 dist-ssr
+build
+
+# ── Environment (secrets) ──────────────────────
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
 *.local
+!.env.example
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +35,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+Thumbs.db
+Desktop.ini

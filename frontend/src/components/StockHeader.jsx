@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { motion } from "framer-motion";
 import { getCurrencySymbol, formatPrice } from "../utils/formatters";
 
 const StockHeader = memo(({ stock }) => {
@@ -15,17 +16,30 @@ const StockHeader = memo(({ stock }) => {
   ];
 
   return (
-    <section style={{
-      borderRadius: "14px",
-      border: "1px solid rgba(255,255,255,0.04)",
-      background: "rgba(255,255,255,0.015)",
-      padding: "20px 24px",
-      marginBottom: "0px",
-    }}>
+    <motion.section
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      style={{
+        borderRadius: "14px",
+        border: `1px solid ${isUp ? "rgba(16,185,129,0.08)" : "rgba(244,63,94,0.08)"}`,
+        background: "rgba(255,255,255,0.015)",
+        padding: "20px 24px",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      {/* Top accent line */}
+      <div style={{
+        position: "absolute", top: 0, left: "10%", right: "10%", height: "1px",
+        background: isUp
+          ? "linear-gradient(90deg, transparent, rgba(16,185,129,0.2), transparent)"
+          : "linear-gradient(90deg, transparent, rgba(244,63,94,0.2), transparent)",
+      }} />
+
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "16px" }}>
         <div>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-            <h3 style={{ fontSize: "18px", fontWeight: 700, color: "#f0f2f5", letterSpacing: "-0.01em" }}>{stock.name || stock.symbol}</h3>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+            <h3 style={{ fontSize: "18px", fontWeight: 700, color: "#f0f2f5", letterSpacing: "-0.02em" }}>{stock.name || stock.symbol}</h3>
             <span style={{
               fontSize: "12px", fontWeight: 600, color: "#505872",
               padding: "2px 8px", borderRadius: "5px",
@@ -37,40 +51,62 @@ const StockHeader = memo(({ stock }) => {
               background: "rgba(255,255,255,0.02)",
             }}>{cur}</span>
           </div>
-          <p style={{
-            fontSize: "32px", fontWeight: 800, marginTop: "4px",
-            letterSpacing: "-0.03em", color: "#f0f2f5",
-          }}>{formatPrice(stock.price, cur)}</p>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px" }}>
-            <span style={{
-              display: "inline-flex", alignItems: "center", gap: "3px",
-              fontSize: "13px", fontWeight: 600,
-              color: isUp ? "#10b981" : "#f43f5e",
-              padding: "2px 8px", borderRadius: "6px",
-              background: isUp ? "rgba(16,185,129,0.08)" : "rgba(244,63,94,0.08)",
-            }}>
+
+          {/* Price with animated flash */}
+          <motion.p
+            key={stock.price}
+            initial={{ opacity: 0.7, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.3 }}
+            style={{
+              fontSize: "34px", fontWeight: 800, marginTop: "2px",
+              letterSpacing: "-0.04em", color: "#f0f2f5",
+              fontFeatureSettings: '"tnum" 1',
+            }}
+          >
+            {formatPrice(stock.price, cur)}
+          </motion.p>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px" }}>
+            <motion.span
+              initial={{ scale: 0.9 }}
+              animate={{ scale: 1 }}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: "4px",
+                fontSize: "13px", fontWeight: 600,
+                color: isUp ? "#10b981" : "#f43f5e",
+                padding: "3px 10px", borderRadius: "6px",
+                background: isUp ? "rgba(16,185,129,0.08)" : "rgba(244,63,94,0.08)",
+                border: `1px solid ${isUp ? "rgba(16,185,129,0.12)" : "rgba(244,63,94,0.12)"}`,
+              }}
+            >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
                 style={{ transform: isUp ? "rotate(0)" : "rotate(180deg)", transition: "transform 0.3s ease" }}>
                 <polyline points="18 15 12 9 6 15" />
               </svg>
               {isUp ? "+" : ""}{delta}
-            </span>
+            </motion.span>
           </div>
         </div>
 
         <div style={{
-          display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "12px 24px",
+          display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "12px 28px",
           fontSize: "13px",
         }}>
           {metaItems.map((item, i) => (
-            <div key={i}>
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 + i * 0.05, duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+            >
               <dt style={{ color: "#3b4260", fontSize: "11px", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.06em" }}>{item.label}</dt>
-              <dd style={{ fontWeight: 600, color: "#8b93a7", marginTop: "2px" }}>{item.value}</dd>
-            </div>
+              <dd style={{ fontWeight: 600, color: "#8b93a7", marginTop: "3px", fontFeatureSettings: '"tnum" 1' }}>{item.value}</dd>
+            </motion.div>
           ))}
         </div>
       </div>
-    </section>
+    </motion.section>
   );
 });
 
