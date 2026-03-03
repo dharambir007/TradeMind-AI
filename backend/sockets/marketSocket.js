@@ -1,7 +1,7 @@
 const { Server } = require("socket.io");
 const { redis, cache } = require("../config/redis");
 const Redis = require("ioredis");
-const { startTickProducer } = require("./tickProducer");
+const { startTickProducer, subscribeSymbols, unsubscribeSymbols } = require("./tickProducer");
 
 let io;
 let subscriber;
@@ -38,6 +38,7 @@ function initSocket(server) {
     socket.on("subscribe", async (symbol) => {
       socket.join(symbol);
       console.log(`Client ${socket.id} subscribed to ${symbol}`);
+      subscribeSymbols([symbol]); // Tell tick producer about new symbol
       try {
         const lastTick = await cache.get(`tick:${symbol}`);
         if (lastTick) socket.emit("tick", lastTick);
@@ -46,6 +47,9 @@ function initSocket(server) {
     socket.on("unsubscribe", (symbol) => {
       socket.leave(symbol);
       console.log(`Client ${socket.id} unsubscribed from ${symbol}`);
+      // Only unsubscribe from tick producer if no other clients in the room
+      const room = io.sockets.adapter.rooms.get(symbol);
+      if (!room || room.size === 0) unsubscribeSymbols([symbol]);
     });
     socket.on("disconnect", () => {
       console.log("Client disconnected:", socket.id);

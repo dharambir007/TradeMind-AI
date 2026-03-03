@@ -11,7 +11,7 @@ const safeCache = {
   async set(key, value, ttl) { try { await cache.set(key, value, ttl); } catch {} },
 };
 
-// GET /api/watchlist — get user's watchlist with live prices
+// get watchlist with live prices
 router.get("/", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select("watchlist");
@@ -19,18 +19,15 @@ router.get("/", authMiddleware, async (req, res) => {
       return res.json([]);
     }
 
-    // Fetch live quotes in parallel
     const items = await Promise.all(
       user.watchlist.map(async (entry) => {
         const sym = entry.symbol;
         const cacheKey = `wl:${sym}`;
 
-        // Check cache
         const cached = await safeCache.get(cacheKey);
         if (cached) return { ...cached, addedAt: entry.addedAt };
 
         try {
-          // Resolve to Yahoo symbol (prefer .NS)
           let yahooSym = sym;
           if (!sym.includes(".")) {
             yahooSym = `${sym}.NS`;
@@ -46,10 +43,9 @@ router.get("/", authMiddleware, async (req, res) => {
             currency: quote.currency || "INR",
           };
 
-          await safeCache.set(cacheKey, data, 30); // cache 30s for watchlist
+          await safeCache.set(cacheKey, data, 30);
           return { ...data, addedAt: entry.addedAt };
         } catch (err) {
-          // Return basic info if quote fails
           return {
             symbol: sym,
             name: sym,
@@ -71,7 +67,7 @@ router.get("/", authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/watchlist — add a stock to watchlist
+// add stock to watchlist
 router.post("/", authMiddleware, async (req, res) => {
   try {
     const { symbol } = req.body;
@@ -83,13 +79,11 @@ router.post("/", authMiddleware, async (req, res) => {
 
     const user = await User.findById(req.user._id);
 
-    // Check if already in watchlist
     const existing = user.watchlist.find((w) => w.symbol === cleanSymbol);
     if (existing) {
       return res.status(409).json({ error: "Stock already in watchlist" });
     }
 
-    // Max 20 stocks in watchlist
     if (user.watchlist.length >= 20) {
       return res.status(400).json({ error: "Watchlist limit reached (max 20)" });
     }
@@ -104,7 +98,7 @@ router.post("/", authMiddleware, async (req, res) => {
   }
 });
 
-// DELETE /api/watchlist/:symbol — remove a stock from watchlist
+// remove stock from watchlist
 router.delete("/:symbol", authMiddleware, async (req, res) => {
   try {
     const cleanSymbol = req.params.symbol.replace(/\.(NS|BO)$/, "").toUpperCase().trim();

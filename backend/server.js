@@ -10,6 +10,7 @@ const userRoutes = require('./routes/user');
 const marketRoutes = require('./routes/market');
 const stockRoutes = require('./routes/stocks');
 const watchlistRoutes = require('./routes/watchlist');
+const aiInsightRoutes = require('./routes/aiInsight');
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection:', reason?.message || reason);
@@ -17,35 +18,76 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const app = express();
 const server = http.createServer(app);
-const port = process.env.PORT || 5000;
+const basePort = Number(process.env.PORT) || 5000;
+const maxPortAttempts = Number(process.env.PORT_RETRY_ATTEMPTS) || 10;
 
-connectDb();
-initSocket(server);
+async function bootstrap() {
+  try {
+    await connectDb();
+  } catch (err) {
+    console.error('Failed to initialize MongoDB:', err?.message || err);
+    process.exit(1);
+  }
 
-app.use(
-  cors({
-    origin: [
-      'http://localhost:5173',
-      'http://localhost:5174',
-      'http://localhost:5175',
-      process.env.CLIENT_ORIGIN,
-    ].filter(Boolean),
-    credentials: true,
-  })
-);
-app.use(express.json());
+  initSocket(server);
 
-app.use('/api/auth', authRoutes);
-app.use('/api/user', userRoutes);
-app.use('/api/market', marketRoutes);
-app.use('/api/stocks', stockRoutes);
-app.use('/api/watchlist', watchlistRoutes);
+  app.use(
+    cors({
+      origin: [
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'http://localhost:5175',
+        process.env.CLIENT_ORIGIN,
+      ].filter(Boolean),
+      credentials: true,
+    })
+  );
+  app.use(express.json());
 
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', websocket: 'enabled', redis: redis.status });
-});
+  app.use('/api/auth', authRoutes);
+  app.use('/api/user', userRoutes);
+  app.use('/api/market', marketRoutes);
+  app.use('/api/stocks', stockRoutes);
+  app.use('/api/watchlist', watchlistRoutes);
+  app.use('/api/ai-insight', aiInsightRoutes);
 
-server.listen(port, () => {
-  console.log(`Server is running at http://localhost:${port}`);
-  console.log(`WebSocket server is ready for connections`);
-});
+  app.get('/', (req, res) => {
+    res.json({ status: 'ok', websocket: 'enabled', redis: redis.status });
+  });
+
+  startServer(basePort, maxPortAttempts - 1);
+}
+
+function startServer(port, remainingRetries) {
+  const onListening = () => {
+    server.off('error', onError);
+    const activePort = server.address()?.port || port;
+    console.log(`Server is running at http://localhost:${activePort}`);
+    console.log('WebSocket server is ready for connections');
+  };
+
+  const onError = (err) => {
+    server.off('listening', onListening);
+
+    if (err?.code === 'EADDRINUSE' && remainingRetries > 0) {
+      const nextPort = port + 1;
+      console.warn(`Port ${port} is in use. Retrying on ${nextPort}...`);
+
+      if (server.listening) {
+        server.close(() => startServer(nextPort, remainingRetries - 1));
+      } else {
+        startServer(nextPort, remainingRetries - 1);
+      }
+      return;
+    }
+
+    console.error('Failed to start server:', err?.message || err);
+    process.exit(1);
+  };
+
+  server.once('listening', onListening);
+  server.once('error', onError);
+  server.listen(port);
+}
+
+bootstrap();

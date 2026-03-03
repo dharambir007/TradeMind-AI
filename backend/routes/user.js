@@ -4,12 +4,10 @@ const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 
-// GET /api/user/me - Get current user
 router.get('/me', authMiddleware, async (req, res) => {
   res.json({ user: { id: req.user._id, name: req.user.name, email: req.user.email } });
 });
 
-// PUT /api/user/update - Update user profile
 router.put('/update', authMiddleware, async (req, res) => {
   try {
     const { name, email } = req.body;
@@ -34,7 +32,6 @@ router.put('/update', authMiddleware, async (req, res) => {
   }
 });
 
-// DELETE /api/user/delete - Delete user account
 router.delete('/delete', authMiddleware, async (req, res) => {
   try {
     await User.findByIdAndDelete(req.user._id);

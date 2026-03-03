@@ -8,7 +8,6 @@ const signToken = (user) => {
   return jwt.sign({ id: user._id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
 };
 
-// POST /api/auth/signup
 router.post('/signup', async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -36,7 +35,6 @@ router.post('/signup', async (req, res) => {
   }
 });
 
-// POST /api/auth/login
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;

@@ -50,7 +50,6 @@ const INDIAN_STOCKS = [
   { symbol: "WIPRO", name: "Wipro Ltd.", sector: "IT" },
   { symbol: "UPL", name: "UPL Ltd.", sector: "Chemicals" },
 
-  // ── NIFTY NEXT 50 / Popular mid-caps ──
   { symbol: "ADANIGREEN", name: "Adani Green Energy Ltd.", sector: "Energy" },
   { symbol: "ADANIPOWER", name: "Adani Power Ltd.", sector: "Power" },
   { symbol: "AMBUJACEM", name: "Ambuja Cements Ltd.", sector: "Cement" },
@@ -124,7 +123,6 @@ const INDIAN_STOCKS = [
   { symbol: "ZOMATO", name: "Zomato Ltd.", sector: "Consumer" },
   { symbol: "ZYDUSLIFE", name: "Zydus Lifesciences Ltd.", sector: "Pharma" },
 
-  // ── More popular stocks ──
   { symbol: "ABCAPITAL", name: "Aditya Birla Capital Ltd.", sector: "Finance" },
   { symbol: "ACC", name: "ACC Ltd.", sector: "Cement" },
   { symbol: "ALOKINDS", name: "Alok Industries Ltd.", sector: "Textiles" },
@@ -185,24 +183,20 @@ const INDIAN_STOCKS = [
   { symbol: "YESBANK", name: "Yes Bank Ltd.", sector: "Banking" },
   { symbol: "ZEEL", name: "Zee Entertainment Enterprises Ltd.", sector: "Media" },
 
-  // ── Indices (informational) ──
   { symbol: "^NSEI", name: "NIFTY 50", sector: "Index" },
   { symbol: "^BSESN", name: "SENSEX", sector: "Index" },
   { symbol: "^NSEBANK", name: "NIFTY Bank", sector: "Index" },
   { symbol: "^CNXIT", name: "NIFTY IT", sector: "Index" },
 ];
 
-// Build a quick-lookup map once at load time
+// quick-lookup map
 const symbolMap = new Map();
 INDIAN_STOCKS.forEach((s) => {
   const key = s.symbol.toUpperCase();
   if (!symbolMap.has(key)) symbolMap.set(key, s);
 });
 
-/**
- * Fast local search — matches symbol prefix or name substring.
- * Returns up to `limit` results (default 8).
- */
+// search by symbol prefix or name substring
 function searchIndianStocks(query, limit = 8) {
   if (!query || query.length < 1) return [];
   const q = query.toUpperCase().trim();
@@ -223,9 +217,7 @@ function searchIndianStocks(query, limit = 8) {
     }
   }
 
-  // Prioritize symbol-prefix matches, then name matches
   const combined = [...symbolPrefixMatches, ...nameMatches];
-  // Deduplicate by symbol
   const seen = new Set();
   const results = [];
   for (const stock of combined) {
