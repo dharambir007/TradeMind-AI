@@ -28,12 +28,15 @@ ML MODEL/.env
 # Dataset files (large CSV/parquet — not needed in git)
 ML MODEL/BANK_NIFTY_data/
 ML MODEL/NIFTY_data/
-ML MODEL/output/
 *.csv
 *.parquet
 
-# ML model files (large binaries)
-*.pkl
+# ML model files (large binaries — keep deployed models)
+!ML MODEL/output/
+ML MODEL/output/*
+!ML MODEL/output/model.pkl
+!ML MODEL/output/model_2min.pkl
+!ML MODEL/output/features_2min.txt
 *.joblib
 *.h5
 *.pt

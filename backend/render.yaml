@@ -2,8 +2,10 @@ services:
   - type: web
     name: trademind-backend
     runtime: node
+    rootDir: backend
     buildCommand: npm install
     startCommand: node server.js
+    healthCheckPath: /api/market/status
     envVars:
       - key: NODE_ENV
         value: production
@@ -26,10 +28,12 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-1.5-flash
+        value: gemini-2.0-flash
       - key: GEMINI_TIMEOUT_MS
         value: 12000
       - key: AI_INSIGHT_CACHE_TTL
         value: 180
       - key: NEWS_TIMEOUT_MS
         value: 5000
+      - key: NEWS_API_KEY
+        sync: false

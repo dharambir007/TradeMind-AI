@@ -12,8 +12,12 @@ BANK_NIFTY_data/
 NIFTY_data/
 
 # ── Model & output artifacts ───────────────────
-output/
-*.pkl
+# Keep trained models & feature list for deployment
+!output/
+output/*
+!output/model.pkl
+!output/model_2min.pkl
+!output/features_2min.txt
 *.joblib
 *.h5
 *.pt

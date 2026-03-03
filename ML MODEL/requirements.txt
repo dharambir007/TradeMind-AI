@@ -22,8 +22,7 @@ matplotlib>=3.6.0
 seaborn>=0.12.0
 
 # Technical Indicators
-ta-lib==0.4.24  # Optional: for technical indicators (may require manual installation)
-# If ta-lib installation fails, the pipeline will use manual implementations
+# ta-lib==0.4.24  # Disabled: requires C library; pipeline uses manual implementations
 
 # Utilities
 python-dotenv>=0.21.0
