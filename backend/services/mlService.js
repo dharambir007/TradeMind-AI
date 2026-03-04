@@ -10,7 +10,7 @@ const agent = new http.Agent({
 
 const mlClient = axios.create({
     baseURL: process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000',
-    timeout: 5000,
+    timeout: 15000,
     httpAgent: agent,
     headers: {
         'Content-Type': 'application/json',
