@@ -221,8 +221,8 @@ async def predict_endpoint(request: PredictionRequest):
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail="Internal prediction error")
+        logger.error(f"Prediction error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Prediction error: {type(e).__name__}: {e}")
 
 
 # multi-step candle prediction
