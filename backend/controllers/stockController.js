@@ -1,7 +1,7 @@
 const YahooFinance = require("yahoo-finance2").default;
 const yahooFinance = new YahooFinance();
 const { cache } = require("../config/redis");
-const { searchIndianStocks } = require("../data/indianStocks");
+const { searchIndianStocks, symbolMap } = require("../data/indianStocks");
 const { getPrediction, getPredictionCandles } = require("../services/mlService");
 
 const safeCache = {
@@ -39,13 +39,33 @@ const DEFAULT_CHART_STEPS = 3;
 
 const getStock = async (req, res) => {
   try {
-    const symbol = await resolveSymbol(req.params.symbol);
+    let symbol;
+    try {
+      symbol = await resolveSymbol(req.params.symbol);
+    } catch (resolveErr) {
+      console.error("[getStock] resolveSymbol failed:", resolveErr.message);
+      const raw = String(req.params.symbol).toUpperCase();
+      symbol = raw.includes(".") ? raw : `${raw}.NS`;
+    }
+
+    console.log(`[getStock] symbol=${req.params.symbol} → resolved=${symbol}`);
     const cacheKey = `stock:${symbol}`;
 
     const cached = await safeCache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    const quote = await yahooFinance.quote(symbol);
+    let quote;
+    try {
+      quote = await yahooFinance.quote(symbol);
+    } catch (quoteErr) {
+      console.error(`[getStock] Yahoo quote(${symbol}) failed:`, quoteErr.message);
+      return res.status(502).json({ error: "Unable to fetch stock quote from market data provider" });
+    }
+
+    if (!quote || !quote.regularMarketPrice) {
+      console.warn(`[getStock] No valid quote data for ${symbol}`);
+      return res.status(404).json({ error: `No market data found for ${symbol}` });
+    }
 
     const data = {
       symbol: quote.symbol,
@@ -69,7 +89,7 @@ const getStock = async (req, res) => {
     await safeCache.set(cacheKey, data, 60);
     res.json(data);
   } catch (err) {
-    console.error("getStock error:", err.message);
+    console.error("[getStock] Unhandled error:", err.message);
     res.status(500).json({ error: "Failed to fetch stock data" });
   }
 };
@@ -760,12 +780,13 @@ function round2(value) {
 }
 
 async function resolveSymbol(input) {
-  const upper = input.toUpperCase();
+  const upper = input.toUpperCase().trim();
   const cacheKey = `resolve:${upper}`;
 
   const cached = await safeCache.get(cacheKey);
   if (cached) return cached;
 
+  // --- Fast path: if it already has a suffix (.NS, .BO), validate & return ---
   if (upper.includes(".")) {
     try {
       const q = await yahooFinance.quote(upper);
@@ -774,17 +795,43 @@ async function resolveSymbol(input) {
         return q.symbol;
       }
     } catch (_) { }
+    await safeCache.set(cacheKey, upper, 3600);
     return upper;
   }
 
+  // --- Fast path: check local Indian stocks list first (no network needed) ---
+  if (symbolMap.has(upper)) {
+    const resolved = `${upper}.NS`;
+    console.log(`[resolveSymbol] Local match: ${upper} → ${resolved}`);
+    await safeCache.set(cacheKey, resolved, 3600);
+    return resolved;
+  }
+
+  // --- Try Yahoo quote with bare symbol ---
   try {
     const q = await yahooFinance.quote(upper);
     if (q && q.symbol) {
       await safeCache.set(cacheKey, q.symbol, 3600);
       return q.symbol;
     }
-  } catch (_) {}
+  } catch (_) {
+    console.warn(`[resolveSymbol] Yahoo quote(${upper}) failed, trying .NS`);
+  }
 
+  // --- Try with .NS suffix directly (common for Indian stocks) ---
+  const nsSymbol = `${upper}.NS`;
+  try {
+    const q = await yahooFinance.quote(nsSymbol);
+    if (q && q.symbol) {
+      console.log(`[resolveSymbol] .NS fallback success: ${upper} → ${q.symbol}`);
+      await safeCache.set(cacheKey, q.symbol, 3600);
+      return q.symbol;
+    }
+  } catch (_) {
+    console.warn(`[resolveSymbol] Yahoo quote(${nsSymbol}) also failed`);
+  }
+
+  // --- Try Yahoo search as last resort ---
   try {
     const results = await yahooFinance.search(upper);
     const equities = (results.quotes || []).filter(
@@ -813,9 +860,14 @@ async function resolveSymbol(input) {
       await safeCache.set(cacheKey, equities[0].symbol, 3600);
       return equities[0].symbol;
     }
-  } catch (_) {}
+  } catch (_) {
+    console.warn(`[resolveSymbol] Yahoo search(${upper}) failed`);
+  }
 
-  return upper;
+  // --- Ultimate fallback: assume Indian stock ---
+  console.warn(`[resolveSymbol] All lookups failed for ${upper}, defaulting to ${nsSymbol}`);
+  await safeCache.set(cacheKey, nsSymbol, 600);
+  return nsSymbol;
 }
 
 function formatLargeNumber(num) {
