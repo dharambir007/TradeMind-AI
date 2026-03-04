@@ -40,7 +40,7 @@ const TIMEFRAME_MAP = Object.freeze({
 const DEFAULT_PREDICTION_TIMEFRAME = "3m";
 const DEFAULT_PREDICTION_STEPS = 3;
 const PREDICTION_TIMEFRAME_OPTIONS = ["3m", "5m", "10m"];
-const DEFAULT_CHART_INTERVAL = "2m";
+const DEFAULT_CHART_INTERVAL = "5m";
 const MARKET_TIME_ZONE = "Asia/Kolkata";
 const MARKET_OPEN_MINUTE = 9 * 60 + 15; // 09:15 IST
 const MARKET_CLOSE_MINUTE = 15 * 60 + 30; // 15:30 IST
@@ -859,9 +859,11 @@ const CandleChart = memo(({ symbol, currency }) => {
       setLoading(true);
       setError("");
       try {
+        const safeRange = range || "1d";
+        const safeInterval = interval || "5m";
         const res = await apiClient.get(
           `/stocks/${encodeURIComponent(symbol)}/history`,
-          { params: { range, interval } }
+          { params: { range: safeRange, interval: safeInterval } }
         );
         if (!active) return;
 
@@ -952,12 +954,16 @@ const CandleChart = memo(({ symbol, currency }) => {
       if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
 
       try {
+        const safeRange = range || "1d";
+        const safeInterval = interval || "5m";
         const res = await apiClient.get(
           `/stocks/${encodeURIComponent(symbol)}/history`,
-          { params: { range, interval } }
+          { params: { range: safeRange, interval: safeInterval } }
         );
         if (!active) return;
 
+        // Handle {success:false} response from backend
+        if (res.data && res.data.success === false) return;
         const rawCandles = Array.isArray(res.data) ? res.data : [];
         const backendAlreadyFiltered =
           rawCandles.length > 0 && typeof rawCandles[0].time === "number";

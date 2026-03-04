@@ -74,11 +74,33 @@ const getStock = async (req, res) => {
   }
 };
 
+const VALID_RANGES = new Set(["1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"]);
+const VALID_INTERVALS = new Set([
+  "1m", "2m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo",
+]);
+
 const getStockHistory = async (req, res) => {
   try {
-    const symbol = await resolveSymbol(req.params.symbol);
-    let range = req.query.range || "1mo";
-    const interval = String(req.query.interval || "1d").toLowerCase();
+    // --- 1. Validate & default query parameters ---
+    let range = String(req.query.range || "").trim().toLowerCase();
+    let interval = String(req.query.interval || "").trim().toLowerCase();
+
+    if (!range || !VALID_RANGES.has(range)) range = "1d";
+    if (!interval || !VALID_INTERVALS.has(interval)) interval = "5m";
+
+    console.log(`[getStockHistory] symbol=${req.params.symbol} range=${range} interval=${interval}`);
+
+    // --- 2. Resolve symbol (appends .NS for NSE via resolveSymbol) ---
+    let symbol;
+    try {
+      symbol = await resolveSymbol(req.params.symbol);
+    } catch (resolveErr) {
+      console.error("[getStockHistory] resolveSymbol failed:", resolveErr.message);
+      // Fallback: append .NS for Indian stocks
+      const raw = String(req.params.symbol).toUpperCase();
+      symbol = raw.includes(".") ? raw : `${raw}.NS`;
+    }
+
     const intradaySeconds = getIntradayIntervalSeconds(interval);
     const isIntraday = Number.isFinite(intradaySeconds);
 
@@ -87,40 +109,62 @@ const getStockHistory = async (req, res) => {
       if (["2m", "5m"].includes(interval) && !["1d", "5d"].includes(range)) range = "5d";
     }
 
+    // --- 3. Cache check ---
     const cacheKey = `history:v2:${symbol}:${range}:${interval}`;
     const cached = await safeCache.get(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) {
+      console.log(`[getStockHistory] Cache HIT for ${cacheKey}`);
+      return res.json(cached);
+    }
 
+    // --- 4. Fetch data ---
     if (isIntraday) {
-      const intradayCandles = await fetchIntradayHistoryCandles(symbol, { range, interval });
+      let intradayCandles = [];
+      try {
+        intradayCandles = await fetchIntradayHistoryCandles(symbol, { range, interval });
+      } catch (fetchErr) {
+        console.error("[getStockHistory] fetchIntradayHistoryCandles failed:", fetchErr.message);
+        return res.json({ success: false, message: "No stock data available", data: [] });
+      }
+
       const sessionCandles = filterToCurrentOrLastTradingSession(intradayCandles, {
         timeZone: MARKET_TIME_ZONE,
         openMinute: MARKET_OPEN_MINUTE,
         closeMinute: MARKET_CLOSE_MINUTE,
       });
 
+      if (!sessionCandles || sessionCandles.length === 0) {
+        console.warn(`[getStockHistory] No intraday candles for ${symbol} (${range}/${interval})`);
+        return res.json([]);
+      }
+
       // Intraday should stay fresh for realtime UI.
       await safeCache.set(cacheKey, sessionCandles, 10);
-      if (process.env.NODE_ENV !== "production") {
-        console.debug("[getStockHistory] Intraday response", {
-          symbol,
-          interval,
-          range,
-          candles: sessionCandles.length,
-        });
-      }
+      console.log(`[getStockHistory] Intraday response: ${symbol} ${interval} ${range} → ${sessionCandles.length} candles`);
       return res.json(sessionCandles);
     }
 
-    const period1 = getPeriodStart(range, interval);
-    const period2 = new Date();
-    const result = await yahooFinance.chart(symbol, {
-      period1,
-      period2,
-      interval,
-    });
+    // --- 5. Daily / weekly / monthly ---
+    let result;
+    try {
+      const period1 = getPeriodStart(range, interval);
+      const period2 = new Date();
+      result = await yahooFinance.chart(symbol, {
+        period1,
+        period2,
+        interval,
+      });
+    } catch (yahooErr) {
+      console.error("[getStockHistory] Yahoo Finance chart() error:", yahooErr.message);
+      return res.json({ success: false, message: "No stock data available", data: [] });
+    }
 
-    const candles = (result.quotes || [])
+    if (!result || !result.quotes || result.quotes.length === 0) {
+      console.warn(`[getStockHistory] Yahoo returned empty quotes for ${symbol}`);
+      return res.json({ success: false, message: "No stock data available", data: [] });
+    }
+
+    const candles = (result.quotes)
       .filter((q) => q.open != null && q.close != null)
       .map((q) => ({
         time: formatDate(q.date),
@@ -131,11 +175,17 @@ const getStockHistory = async (req, res) => {
         volume: q.volume || 0,
       }));
 
+    if (candles.length === 0) {
+      console.warn(`[getStockHistory] All quotes filtered out for ${symbol}`);
+      return res.json({ success: false, message: "No stock data available", data: [] });
+    }
+
     await safeCache.set(cacheKey, candles, 300);
+    console.log(`[getStockHistory] Daily response: ${symbol} ${interval} ${range} → ${candles.length} candles`);
     res.json(candles);
   } catch (err) {
-    console.error("getStockHistory error:", err.message);
-    res.status(500).json({ error: "Failed to fetch stock history" });
+    console.error("[getStockHistory] Unhandled error:", err.message, err.stack);
+    res.status(500).json({ success: false, message: "Failed to fetch stock history", data: [] });
   }
 };
 

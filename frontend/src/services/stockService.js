@@ -6,8 +6,10 @@ export const stockService = {
     return response.data;
   },
 
-  async getStockHistory(symbol) {
-    const response = await apiClient.get(`/stocks/${symbol}/history`);
+  async getStockHistory(symbol, range = "1d", interval = "5m") {
+    const response = await apiClient.get(`/stocks/${encodeURIComponent(symbol)}/history`, {
+      params: { range: range || "1d", interval: interval || "5m" },
+    });
     return response.data;
   },
 
