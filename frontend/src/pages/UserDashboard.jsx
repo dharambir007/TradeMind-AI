@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from "axios";
@@ -19,9 +19,9 @@ const apiClient = axios.create({
   timeout: 8000,
 });
 
-const MOCK_STOCK = {
+const MOCK_STOCK_BASE = {
   symbol: "RELIANCE",
-  name: "Reliance Industries Ltd.",
+  name: "Sample Stock",
   price: 2945.30,
   change: 18.75,
   changePercent: 0.64,
@@ -33,7 +33,22 @@ const MOCK_STOCK = {
 const UserDashboard = () => {
   const { symbol: routeSymbol } = useParams();
   const navigate = useNavigate();
-  const symbol = (routeSymbol || "RELIANCE").toUpperCase();
+
+  const symbol = useMemo(() => {
+    const raw = String(routeSymbol || "").trim();
+    if (!raw) return "RELIANCE";
+    try {
+      return decodeURIComponent(raw).toUpperCase();
+    } catch (_) {
+      return raw.toUpperCase();
+    }
+  }, [routeSymbol]);
+
+  const buildFallbackStock = useCallback((targetSymbol) => ({
+    ...MOCK_STOCK_BASE,
+    symbol: targetSymbol,
+    name: `${targetSymbol} (Sample Data)`,
+  }), []);
 
   const [stock, setStock] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -62,18 +77,21 @@ const UserDashboard = () => {
       setLoading(true);
       setError("");
       try {
-        const stockRes = await apiClient.get(`/stocks/${symbol}`, {
+        const stockRes = await apiClient.get(`/stocks/${encodeURIComponent(symbol)}`, {
           signal: controller.signal,
         });
         const fetchedStock = stockRes?.data;
-        const hasStock = fetchedStock && Object.keys(fetchedStock).length > 0;
+        const hasStock =
+          fetchedStock &&
+          fetchedStock.success !== false &&
+          Number.isFinite(Number(fetchedStock.price));
         if (!active) return;
 
         if (hasStock) {
           setStock(fetchedStock);
           setUsingMock(false);
         } else {
-          setStock(MOCK_STOCK);
+          setStock(buildFallbackStock(symbol));
           setUsingMock(true);
         }
         setError("");
@@ -81,7 +99,7 @@ const UserDashboard = () => {
         if (!active || err?.name === "CanceledError" || axios.isCancel(err)) return;
         console.error("Failed to load live data", err);
         setError("Live data unavailable. Showing sample data.");
-        setStock(MOCK_STOCK);
+        setStock(buildFallbackStock(symbol));
         setUsingMock(true);
       } finally {
         if (active) setLoading(false);
@@ -90,10 +108,10 @@ const UserDashboard = () => {
 
     load();
     return () => { active = false; controller.abort(); };
-  }, [symbol]);
+  }, [symbol, buildFallbackStock]);
 
   const handleStockClick = useCallback((sym) => {
-    navigate(`/dashboard/${sym}`);
+    navigate(`/dashboard/${encodeURIComponent(sym)}`);
     if (isMobile) setMobileTab("chart");
   }, [navigate, isMobile]);
 

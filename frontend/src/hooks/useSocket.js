@@ -18,6 +18,22 @@ const SOCKET_URL = resolveSocketUrl();
 let sharedSocket = null;
 let refCount = 0;
 
+function normalizeSocketSymbol(raw) {
+    const symbol = String(raw || "").trim().toUpperCase();
+    if (!symbol) return "";
+
+    if (
+        symbol.startsWith("^") ||
+        symbol.endsWith("=X") ||
+        symbol.endsWith("=F") ||
+        symbol.endsWith("-USD")
+    ) {
+        return symbol.replace(/\.(NS|BO)$/, "");
+    }
+
+    return symbol.includes(".") ? symbol : `${symbol}.NS`;
+}
+
 function getSocket() {
     if (!sharedSocket) {
         if (import.meta.env.DEV) {
@@ -110,7 +126,7 @@ export function useSocket(symbol) {
         }
 
         if (symbol) {
-            const yahooSymbol = symbol.includes(".") ? symbol : `${symbol}.NS`;
+            const yahooSymbol = normalizeSocketSymbol(symbol);
             socket.emit("subscribe", yahooSymbol);
             currentSymbol.current = yahooSymbol;
             setTick(null);
@@ -119,14 +135,14 @@ export function useSocket(symbol) {
 
     const subscribe = useCallback((sym) => {
         if (socketRef.current && sym) {
-            const yahooSym = sym.includes(".") ? sym : `${sym}.NS`;
+            const yahooSym = normalizeSocketSymbol(sym);
             socketRef.current.emit("subscribe", yahooSym);
         }
     }, []);
 
     const unsubscribe = useCallback((sym) => {
         if (socketRef.current && sym) {
-            const yahooSym = sym.includes(".") ? sym : `${sym}.NS`;
+            const yahooSym = normalizeSocketSymbol(sym);
             socketRef.current.emit("unsubscribe", yahooSym);
         }
     }, []);

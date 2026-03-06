@@ -72,7 +72,7 @@ const SearchBar = memo(() => {
   const navigateToStock = (symbol) => {
     // Strip .NS/.BO suffix for clean URL
     const clean = symbol.replace(/\.(NS|BO)$/, "");
-    navigate(`/dashboard/${clean}`);
+    navigate(`/dashboard/${encodeURIComponent(clean)}`);
     setQuery("");
     setResults([]);
     setOpen(false);

@@ -11,8 +11,13 @@ const marketRoutes = require('./routes/market');
 const stockRoutes = require('./routes/stocks');
 const watchlistRoutes = require('./routes/watchlist');
 const aiInsightRoutes = require('./routes/aiInsight');
+const predictionRoutes = require('./routes/prediction');
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error?.stack || error?.message || error);
+});
+
+process.on('unhandledRejection', (reason) => {
   console.error('Unhandled Rejection:', reason?.message || reason);
 });
 
@@ -44,6 +49,10 @@ async function bootstrap() {
     })
   );
   app.use(express.json());
+  app.use((req, res, next) => {
+    console.log('API HIT:', req.originalUrl);
+    next();
+  });
 
   app.use('/api/auth', authRoutes);
   app.use('/api/user', userRoutes);
@@ -51,9 +60,33 @@ async function bootstrap() {
   app.use('/api/stocks', stockRoutes);
   app.use('/api/watchlist', watchlistRoutes);
   app.use('/api/ai-insight', aiInsightRoutes);
+  app.use('/api/prediction', predictionRoutes);
+
+  app.get('/api/health', (req, res) => {
+    res.json({ status: 'running' });
+  });
 
   app.get('/', (req, res) => {
     res.json({ status: 'ok', websocket: 'enabled', redis: redis.status });
+  });
+
+  app.use((req, res, next) => {
+    if (req.originalUrl.startsWith('/api/')) {
+      return res.status(404).json({
+        success: false,
+        message: 'Route not found',
+      });
+    }
+    return next();
+  });
+
+  app.use((err, req, res, next) => {
+    console.error('Express error:', err?.stack || err?.message || err);
+    if (res.headersSent) return next(err);
+    return res.status(err?.status || 500).json({
+      success: false,
+      message: err?.message || 'Internal server error',
+    });
   });
 
   startServer(basePort, maxPortAttempts - 1);
@@ -88,7 +121,7 @@ function startServer(port, remainingRetries) {
 
   server.once('listening', onListening);
   server.once('error', onError);
-  server.listen(port);
+  server.listen(port, '0.0.0.0');
 }
 
 bootstrap();

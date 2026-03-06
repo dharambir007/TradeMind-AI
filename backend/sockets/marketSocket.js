@@ -6,6 +6,22 @@ const { startTickProducer, subscribeSymbols, unsubscribeSymbols } = require("./t
 let io;
 let subscriber;
 
+function normalizeSocketSymbol(raw) {
+  const symbol = String(raw || "").trim().toUpperCase();
+  if (!symbol) return "";
+
+  if (
+    symbol.startsWith("^") ||
+    symbol.endsWith("=X") ||
+    symbol.endsWith("=F") ||
+    symbol.endsWith("-USD")
+  ) {
+    return symbol.replace(/\.(NS|BO)$/, "");
+  }
+
+  return symbol.includes(".") ? symbol : `${symbol}.NS`;
+}
+
 function initSocket(server) {
   io = new Server(server, { cors: { origin: "*" } });
 
@@ -35,7 +51,10 @@ function initSocket(server) {
 
   io.on("connection", (socket) => {
     console.log("Client connected:", socket.id);
-    socket.on("subscribe", async (symbol) => {
+    socket.on("subscribe", async (rawSymbol) => {
+      const symbol = normalizeSocketSymbol(rawSymbol);
+      if (!symbol) return;
+
       socket.join(symbol);
       console.log(`Client ${socket.id} subscribed to ${symbol}`);
       subscribeSymbols([symbol]); // Tell tick producer about new symbol
@@ -44,7 +63,10 @@ function initSocket(server) {
         if (lastTick) socket.emit("tick", lastTick);
       } catch (_) {}
     });
-    socket.on("unsubscribe", (symbol) => {
+    socket.on("unsubscribe", (rawSymbol) => {
+      const symbol = normalizeSocketSymbol(rawSymbol);
+      if (!symbol) return;
+
       socket.leave(symbol);
       console.log(`Client ${socket.id} unsubscribed from ${symbol}`);
       // Only unsubscribe from tick producer if no other clients in the room

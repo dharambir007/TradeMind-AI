@@ -2,7 +2,7 @@ import apiClient from "./api";
 
 export const stockService = {
   async getStock(symbol) {
-    const response = await apiClient.get(`/stocks/${symbol}`);
+    const response = await apiClient.get(`/stocks/${encodeURIComponent(symbol)}`);
     return response.data;
   },
 

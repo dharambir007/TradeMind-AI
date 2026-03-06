@@ -49,7 +49,13 @@ async function getAIInsight(req, res) {
 
     const headlines = await fetchYahooFinanceNews(symbol, limit);
     if (!headlines.length) {
-      return res.status(404).json({ error: `No recent news found for ${symbol}` });
+      return res.json({
+        success: false,
+        symbol,
+        summary: ["No recent headlines available right now."],
+        sentiment: "Neutral",
+        insight: "Could not generate insight because no recent news was found.",
+      });
     }
 
     const insight = await generateInsightFromNews({
@@ -58,6 +64,8 @@ async function getAIInsight(req, res) {
     });
 
     const response = {
+      success: true,
+      symbol,
       summary: insight.summary,
       sentiment: insight.sentiment,
       insight: insight.insight,
@@ -70,6 +78,15 @@ async function getAIInsight(req, res) {
     if (err.message === "GEMINI_API_KEY not configured") {
       return res.status(503).json({ error: "Gemini API key is not configured" });
     }
+    if (err.response?.status === 429 || err.status === 429 || /429/.test(String(err.message || ""))) {
+      return res.json({
+        success: false,
+        symbol: normalizeSymbol(req.body?.symbol || req.query?.symbol),
+        summary: ["AI insight is temporarily rate limited."],
+        sentiment: "Neutral",
+        insight: "Too many requests to the AI/news provider. Please retry in a minute.",
+      });
+    }
     return res.status(500).json({ error: "Failed to generate AI insight" });
   }
 }
@@ -77,4 +94,3 @@ async function getAIInsight(req, res) {
 module.exports = {
   getAIInsight,
 };
-

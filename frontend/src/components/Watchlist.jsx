@@ -141,7 +141,7 @@ const Watchlist = memo(({ onStockClick }) => {
   const handleItemClick = (symbol) => {
     const clean = symbol.replace(/\.(NS|BO)$/, "");
     if (onStockClick) onStockClick(clean);
-    else navigate(`/dashboard/${clean}`);
+    else navigate(`/dashboard/${encodeURIComponent(clean)}`);
   };
 
   return (

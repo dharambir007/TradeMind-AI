@@ -36,19 +36,124 @@ const MARKET_OPEN_MINUTE = 9 * 60 + 15;
 const MARKET_CLOSE_MINUTE = 15 * 60 + 30;
 
 const DEFAULT_CHART_STEPS = 3;
+const INDEX_ALIAS_MAP = new Map([
+  ["NSEI", "^NSEI"],
+  ["NIFTY", "^NSEI"],
+  ["NIFTY50", "^NSEI"],
+  ["NSEBANK", "^NSEBANK"],
+  ["BANKNIFTY", "^NSEBANK"],
+  ["BSESN", "^BSESN"],
+  ["SENSEX", "^BSESN"],
+]);
+
+function decodeSymbolInput(input) {
+  let symbol = String(input || "").trim();
+  if (!symbol) return "";
+
+  for (let i = 0; i < 2; i += 1) {
+    try {
+      const decoded = decodeURIComponent(symbol);
+      if (decoded === symbol) break;
+      symbol = decoded;
+    } catch (_) {
+      break;
+    }
+  }
+
+  return symbol;
+}
+
+function getRequestSymbol(req) {
+  const raw = req?.params?.symbol ?? req?.body?.symbol ?? req?.query?.symbol ?? "";
+  return decodeSymbolInput(raw);
+}
+
+function normalizeIncomingSymbol(input) {
+  const decoded = decodeSymbolInput(input)
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  if (!decoded) return "";
+  return INDEX_ALIAS_MAP.get(decoded) || decoded;
+}
+
+function isDirectYahooSymbol(symbol) {
+  const value = String(symbol || "").toUpperCase();
+  return (
+    value.startsWith("^") ||
+    value.endsWith("=X") ||
+    value.endsWith("=F") ||
+    value.endsWith("-USD")
+  );
+}
+
+function normalizeResolvedSymbol(symbol, preferred = "") {
+  const resolved = String(symbol || "").trim().toUpperCase();
+  const fallback = String(preferred || "").trim().toUpperCase();
+  const effective = resolved || fallback;
+  if (!effective) return "";
+
+  const normalizedIndex = effective.match(/^(\^[A-Z0-9._-]+)\.(NS|BO)$/);
+  if (normalizedIndex) return normalizedIndex[1];
+
+  if (fallback.startsWith("^") && !effective.startsWith("^")) {
+    return fallback;
+  }
+
+  return effective;
+}
+
+async function fetchChartSnapshot(symbol) {
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const result = await yahooFinance.chart(symbol, {
+    period1: start,
+    period2: end,
+    interval: "5m",
+  });
+
+  const quotes = result?.quotes || [];
+  const valid = quotes.filter((q) => q && q.open != null && q.close != null);
+  if (!valid.length) return null;
+
+  const latest = valid[valid.length - 1];
+  const previous = valid.length > 1 ? valid[valid.length - 2] : latest;
+  const latestClose = Number(latest.close);
+  const previousClose = Number(previous.close);
+  const change = Number.isFinite(latestClose) && Number.isFinite(previousClose)
+    ? latestClose - previousClose
+    : 0;
+
+  return {
+    symbol,
+    price: Number.isFinite(latestClose) ? latestClose : 0,
+    change,
+    changePercent: Number.isFinite(previousClose) && previousClose !== 0
+      ? (change / previousClose) * 100
+      : 0,
+    high: Number(latest.high),
+    low: Number(latest.low),
+    open: Number(latest.open),
+    prevClose: Number.isFinite(previousClose) ? previousClose : Number(latest.open),
+    volume: Number(latest.volume) || 0,
+  };
+}
 
 const getStock = async (req, res) => {
   try {
+    const requestedSymbol = getRequestSymbol(req);
     let symbol;
     try {
-      symbol = await resolveSymbol(req.params.symbol);
+      symbol = await resolveSymbol(requestedSymbol);
     } catch (resolveErr) {
       console.error("[getStock] resolveSymbol failed:", resolveErr.message);
-      const raw = String(req.params.symbol).toUpperCase();
-      symbol = raw.includes(".") ? raw : `${raw}.NS`;
+      const raw = normalizeIncomingSymbol(requestedSymbol);
+      symbol = raw.includes(".") || isDirectYahooSymbol(raw) ? raw : `${raw}.NS`;
     }
 
-    console.log(`[getStock] symbol=${req.params.symbol} → resolved=${symbol}`);
+    symbol = normalizeResolvedSymbol(symbol, requestedSymbol);
+
+    console.log(`[getStock] symbol=${requestedSymbol} -> resolved=${symbol}`);
     const cacheKey = `stock:${symbol}`;
 
     const cached = await safeCache.get(cacheKey);
@@ -58,23 +163,64 @@ const getStock = async (req, res) => {
     try {
       quote = await yahooFinance.quote(symbol);
     } catch (quoteErr) {
-      console.error(`[getStock] Yahoo quote(${symbol}) failed:`, quoteErr.message);
-      return res.status(502).json({ error: "Unable to fetch stock quote from market data provider" });
+      console.warn(`[getStock] Yahoo quote(${symbol}) failed:`, quoteErr.message);
     }
 
-    if (!quote || !quote.regularMarketPrice) {
-      console.warn(`[getStock] No valid quote data for ${symbol}`);
-      return res.status(404).json({ error: `No market data found for ${symbol}` });
+    const resolvedSymbol = normalizeResolvedSymbol(quote?.symbol || symbol, symbol);
+    const hasQuotePrice = Number.isFinite(Number(quote?.regularMarketPrice));
+
+    if (!hasQuotePrice) {
+      let snapshot = null;
+      try {
+        snapshot = await fetchChartSnapshot(resolvedSymbol);
+      } catch (snapshotErr) {
+        console.warn(`[getStock] Chart snapshot(${resolvedSymbol}) failed:`, snapshotErr.message);
+      }
+
+      if (!snapshot || !Number.isFinite(Number(snapshot.price)) || Number(snapshot.price) <= 0) {
+        console.warn(`[getStock] No valid quote/chart data for ${resolvedSymbol}`);
+        return res.status(404).json({
+          success: false,
+          symbol: resolvedSymbol,
+          message: `No market data found for ${resolvedSymbol}`,
+          history: [],
+          ohlc: [],
+        });
+      }
+
+      const history = await buildQuickHistory(resolvedSymbol);
+      const data = {
+        success: true,
+        symbol: resolvedSymbol,
+        name: resolvedSymbol,
+        price: round2(snapshot.price),
+        change: round2(snapshot.change),
+        changePercent: round2(snapshot.changePercent),
+        marketCap: "-",
+        volume: formatLargeNumber(snapshot.volume),
+        high: Number.isFinite(snapshot.high) ? round2(snapshot.high) : null,
+        low: Number.isFinite(snapshot.low) ? round2(snapshot.low) : null,
+        prevClose: Number.isFinite(snapshot.prevClose) ? round2(snapshot.prevClose) : null,
+        open: Number.isFinite(snapshot.open) ? round2(snapshot.open) : null,
+        fiftyTwoWeekHigh: null,
+        fiftyTwoWeekLow: null,
+        currency: quote?.currency || "INR",
+        history,
+        ohlc: history,
+      };
+
+      await safeCache.set(cacheKey, data, 60);
+      return res.json(data);
     }
 
+    const history = await buildQuickHistory(resolvedSymbol);
     const data = {
-      symbol: quote.symbol,
-      name: quote.shortName || quote.longName || symbol,
+      success: true,
+      symbol: resolvedSymbol,
+      name: quote.shortName || quote.longName || resolvedSymbol,
       price: quote.regularMarketPrice,
       change: parseFloat((quote.regularMarketChange || 0).toFixed(2)),
-      changePercent: parseFloat(
-        (quote.regularMarketChangePercent || 0).toFixed(2)
-      ),
+      changePercent: parseFloat((quote.regularMarketChangePercent || 0).toFixed(2)),
       marketCap: formatLargeNumber(quote.marketCap),
       volume: formatLargeNumber(quote.regularMarketVolume),
       high: quote.regularMarketDayHigh,
@@ -83,14 +229,20 @@ const getStock = async (req, res) => {
       open: quote.regularMarketOpen,
       fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh,
       fiftyTwoWeekLow: quote.fiftyTwoWeekLow,
-      currency: quote.currency || "USD",
+      currency: quote.currency || "INR",
+      history,
+      ohlc: history,
     };
 
     await safeCache.set(cacheKey, data, 60);
-    res.json(data);
+    return res.json(data);
   } catch (err) {
     console.error("[getStock] Unhandled error:", err.message);
-    res.status(500).json({ error: "Failed to fetch stock data" });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch stock data",
+      history: [],
+    });
   }
 };
 
@@ -101,6 +253,7 @@ const VALID_INTERVALS = new Set([
 
 const getStockHistory = async (req, res) => {
   try {
+    const requestedSymbol = getRequestSymbol(req);
     // --- 1. Validate & default query parameters ---
     let range = String(req.query.range || "").trim().toLowerCase();
     let interval = String(req.query.interval || "").trim().toLowerCase();
@@ -108,18 +261,18 @@ const getStockHistory = async (req, res) => {
     if (!range || !VALID_RANGES.has(range)) range = "1d";
     if (!interval || !VALID_INTERVALS.has(interval)) interval = "5m";
 
-    console.log(`[getStockHistory] symbol=${req.params.symbol} range=${range} interval=${interval}`);
+    console.log(`[getStockHistory] symbol=${requestedSymbol} range=${range} interval=${interval}`);
 
     // --- 2. Resolve symbol (appends .NS for NSE via resolveSymbol) ---
     let symbol;
     try {
-      symbol = await resolveSymbol(req.params.symbol);
+      symbol = await resolveSymbol(requestedSymbol);
     } catch (resolveErr) {
       console.error("[getStockHistory] resolveSymbol failed:", resolveErr.message);
-      // Fallback: append .NS for Indian stocks
-      const raw = String(req.params.symbol).toUpperCase();
-      symbol = raw.includes(".") ? raw : `${raw}.NS`;
+      const raw = normalizeIncomingSymbol(requestedSymbol);
+      symbol = raw.includes(".") || isDirectYahooSymbol(raw) ? raw : `${raw}.NS`;
     }
+    symbol = normalizeResolvedSymbol(symbol, requestedSymbol);
 
     const intradaySeconds = getIntradayIntervalSeconds(interval);
     const isIntraday = Number.isFinite(intradaySeconds);
@@ -144,7 +297,7 @@ const getStockHistory = async (req, res) => {
         intradayCandles = await fetchIntradayHistoryCandles(symbol, { range, interval });
       } catch (fetchErr) {
         console.error("[getStockHistory] fetchIntradayHistoryCandles failed:", fetchErr.message);
-        return res.json({ success: false, message: "No stock data available", data: [] });
+        return res.json([]);
       }
 
       const sessionCandles = filterToCurrentOrLastTradingSession(intradayCandles, {
@@ -160,7 +313,7 @@ const getStockHistory = async (req, res) => {
 
       // Intraday should stay fresh for realtime UI.
       await safeCache.set(cacheKey, sessionCandles, 10);
-      console.log(`[getStockHistory] Intraday response: ${symbol} ${interval} ${range} → ${sessionCandles.length} candles`);
+      console.log(`[getStockHistory] Intraday response: ${symbol} ${interval} ${range} -> ${sessionCandles.length} candles`);
       return res.json(sessionCandles);
     }
 
@@ -176,12 +329,12 @@ const getStockHistory = async (req, res) => {
       });
     } catch (yahooErr) {
       console.error("[getStockHistory] Yahoo Finance chart() error:", yahooErr.message);
-      return res.json({ success: false, message: "No stock data available", data: [] });
+      return res.json([]);
     }
 
     if (!result || !result.quotes || result.quotes.length === 0) {
       console.warn(`[getStockHistory] Yahoo returned empty quotes for ${symbol}`);
-      return res.json({ success: false, message: "No stock data available", data: [] });
+      return res.json([]);
     }
 
     const candles = (result.quotes)
@@ -197,15 +350,15 @@ const getStockHistory = async (req, res) => {
 
     if (candles.length === 0) {
       console.warn(`[getStockHistory] All quotes filtered out for ${symbol}`);
-      return res.json({ success: false, message: "No stock data available", data: [] });
+      return res.json([]);
     }
 
     await safeCache.set(cacheKey, candles, 300);
-    console.log(`[getStockHistory] Daily response: ${symbol} ${interval} ${range} → ${candles.length} candles`);
+    console.log(`[getStockHistory] Daily response: ${symbol} ${interval} ${range} -> ${candles.length} candles`);
     res.json(candles);
   } catch (err) {
     console.error("[getStockHistory] Unhandled error:", err.message, err.stack);
-    res.status(500).json({ success: false, message: "Failed to fetch stock history", data: [] });
+    res.json([]);
   }
 };
 
@@ -264,101 +417,125 @@ const searchStocks = async (req, res) => {
   }
 };
 
+async function fetchPredictionSourceCandles(symbol) {
+  const normalizedSymbol = normalizeResolvedSymbol(symbol, symbol);
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const intervals = ["1m", "2m", "5m", "15m", "1d"];
+  let lastError = null;
+
+  for (const interval of intervals) {
+    try {
+      const result = await yahooFinance.chart(normalizedSymbol, {
+        period1: start,
+        period2: end,
+        interval,
+      });
+
+      const quotes = result?.quotes || [];
+      const candles = quotes
+        .filter((q) => q.open != null && q.close != null)
+        .map((q) => ({
+          open: q.open,
+          high: q.high,
+          low: q.low,
+          close: q.close,
+          volume: q.volume || 0,
+          date: q.date.toISOString(),
+        }));
+
+      if (candles.length > 0) {
+        return candles;
+      }
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error("Unable to fetch source candles for prediction");
+}
+
 const getStockPrediction = async (req, res) => {
+  const requestedSymbol = getRequestSymbol(req);
   try {
-    const symbol = await resolveSymbol(req.params.symbol);
+    if (!requestedSymbol) {
+      return res.status(400).json({
+        success: false,
+        message: "symbol is required",
+      });
+    }
+
+    let symbol = await resolveSymbol(requestedSymbol);
+    symbol = normalizeResolvedSymbol(symbol, requestedSymbol);
     const cacheKey = `prediction:${symbol}`;
 
     const cached = await safeCache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    const end = new Date();
-    const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-    const result = await yahooFinance.chart(symbol, {
-      period1: start,
-      period2: end,
-      interval: "1m",
-    });
-
-    const quotes = result.quotes || [];
-    const candles = quotes
-      .filter((q) => q.open != null && q.close != null)
-      .map((q) => ({
-        open: q.open,
-        high: q.high,
-        low: q.low,
-        close: q.close,
-        volume: q.volume || 0,
-        date: q.date.toISOString(),
-      }));
+    const candles = await fetchPredictionSourceCandles(symbol);
 
     if (candles.length < 60) {
-      return res.status(400).json({ error: "Insufficient data for prediction" });
+      return res.json(buildFallbackPrediction(symbol, candles, "Insufficient data for prediction"));
     }
 
     const recentCandles = candles.slice(-100);
-    const prediction = await getPrediction(recentCandles);
+    let prediction;
+    try {
+      prediction = await getPrediction(recentCandles);
+    } catch (mlErr) {
+      console.error("getStockPrediction ML error:", mlErr.message);
+      return res.json(buildFallbackPrediction(symbol, recentCandles, mlErr.message));
+    }
 
     const response = {
+      success: true,
       symbol,
       ...prediction,
       timestamp: new Date().toISOString(),
     };
 
     await safeCache.set(cacheKey, response, 60);
-    res.json(response);
-
+    return res.json(response);
   } catch (err) {
     console.error("getStockPrediction error:", err.message);
-    res.status(500).json({ error: "Failed to generate prediction" });
+    return res.json(buildFallbackPrediction(normalizeIncomingSymbol(requestedSymbol), [], err.message));
   }
 };
 
 const getChartPrediction = async (req, res) => {
+  const requestedSymbol = getRequestSymbol(req);
   try {
-    const symbol = await resolveSymbol(req.params.symbol);
+    let symbol = await resolveSymbol(requestedSymbol);
+    symbol = normalizeResolvedSymbol(symbol, requestedSymbol);
     const steps = Math.min(Math.max(parseInt(req.query.steps) || 3, 1), 30);
 
-    const end = new Date();
-    const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-    const result = await yahooFinance.chart(symbol, {
-      period1: start,
-      period2: end,
-      interval: "1m",
-    });
-
-    const quotes = result.quotes || [];
-    const candles = quotes
-      .filter((q) => q.open != null && q.close != null)
-      .map((q) => ({
-        open: q.open,
-        high: q.high,
-        low: q.low,
-        close: q.close,
-        volume: q.volume || 0,
-        date: q.date.toISOString(),
-      }));
+    const candles = await fetchPredictionSourceCandles(symbol);
 
     if (candles.length < 60) {
-      return res.status(400).json({ error: "Insufficient data for prediction" });
+      return res.json(buildFallbackChartPrediction(symbol, candles, steps, "Insufficient data for prediction"));
     }
 
     const recentCandles = candles.slice(-100);
-    const prediction = await getPredictionCandles(recentCandles, steps, {
-      timeframe: "1m",
-      intervalSeconds: 60,
-    });
+    let prediction;
+    try {
+      prediction = await getPredictionCandles(recentCandles, steps, {
+        timeframe: "1m",
+        intervalSeconds: 60,
+      });
+    } catch (mlErr) {
+      console.error("getChartPrediction ML error:", mlErr.message);
+      return res.json(buildFallbackChartPrediction(symbol, recentCandles, steps, mlErr.message));
+    }
 
-    res.json({
+    return res.json({
+      success: true,
       symbol,
       ...prediction,
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
     console.error("getChartPrediction error:", err.message);
-    res.status(500).json({ error: "Failed to generate chart prediction" });
+    return res.json(buildFallbackChartPrediction(normalizeIncomingSymbol(requestedSymbol), [], 3, err.message));
   }
 };
 
@@ -376,15 +553,26 @@ const getChartPredictionByTimeframe = async (req, res) => {
       return res.status(400).json({ error: "timeframe must be one of: 3m, 5m, 10m" });
     }
 
-    const symbol = await resolveSymbol(inputSymbol);
+    let symbol = await resolveSymbol(inputSymbol);
+    symbol = normalizeResolvedSymbol(symbol, inputSymbol);
     const cacheKey = `predictChartV3:${symbol}:${timeframe}:${steps}`;
+    const intervalSeconds = TIMEFRAME_INTERVAL_SECONDS[timeframe];
 
     const cached = await safeCache.get(cacheKey);
     if (cached) return res.json(cached);
 
     const minuteCandles = await fetchRecentMinuteCandles(symbol);
     if (minuteCandles.length < 60) {
-      return res.status(400).json({ error: "Insufficient data for prediction" });
+      const historicalData = aggregateCandles(minuteCandles, intervalSeconds).slice(-160);
+      const fallback = buildFallbackTimeframeResponse({
+        symbol,
+        timeframe,
+        historicalData,
+        intervalSeconds,
+        steps,
+        message: "Insufficient data for prediction",
+      });
+      return res.json(fallback);
     }
 
     const recentCandles = minuteCandles.slice(-100).map((c) => ({
@@ -396,7 +584,6 @@ const getChartPredictionByTimeframe = async (req, res) => {
       date: c.date,
     }));
 
-    const intervalSeconds = TIMEFRAME_INTERVAL_SECONDS[timeframe];
     const pullbackProbability = Number(req.body?.pullbackProbability);
     const volatilityScale = Number(req.body?.volatilityScale);
     const predictionOptions = {
@@ -410,7 +597,14 @@ const getChartPredictionByTimeframe = async (req, res) => {
       predictionOptions.volatilityScale = clamp(volatilityScale, 0.6, 1.8);
     }
 
-    const prediction = await getPredictionCandles(recentCandles, steps, predictionOptions);
+    let prediction;
+    let predictionErrorMessage = "";
+    try {
+      prediction = await getPredictionCandles(recentCandles, steps, predictionOptions);
+    } catch (mlErr) {
+      predictionErrorMessage = mlErr.message || "Prediction service unavailable";
+      prediction = buildFallbackPredictionPayload(recentCandles, steps, predictionErrorMessage);
+    }
 
     const historicalData = aggregateCandles(minuteCandles, intervalSeconds).slice(-160);
     const predictedData = buildPredictedDataForTimeframe({
@@ -422,6 +616,7 @@ const getChartPredictionByTimeframe = async (req, res) => {
     });
 
     const response = {
+      success: !predictionErrorMessage,
       symbol,
       timeframe,
       historicalData,
@@ -434,38 +629,65 @@ const getChartPredictionByTimeframe = async (req, res) => {
         processingTimeMs: prediction.processing_time_ms,
         steps: predictedData.length,
       },
+      ...(predictionErrorMessage ? { message: predictionErrorMessage } : {}),
       timestamp: new Date().toISOString(),
     };
 
     await safeCache.set(cacheKey, response, 30);
-    res.json(response);
+    return res.json(response);
   } catch (err) {
     console.error("getChartPredictionByTimeframe error:", err.message);
-    res.status(500).json({ error: "Failed to generate timeframe chart prediction" });
+    const symbol = normalizeIncomingSymbol(req.body?.symbol);
+    const timeframe = normalizeTimeframe(req.body?.timeframe || "3m") || "3m";
+    const intervalSeconds = TIMEFRAME_INTERVAL_SECONDS[timeframe];
+    return res.json(buildFallbackTimeframeResponse({
+      symbol,
+      timeframe,
+      historicalData: [],
+      intervalSeconds,
+      steps: DEFAULT_CHART_STEPS,
+      message: err.message || "Failed to generate timeframe chart prediction",
+    }));
   }
 };
 
 async function fetchRecentMinuteCandles(symbol) {
+  const normalizedSymbol = normalizeResolvedSymbol(symbol, symbol);
   const end = new Date();
   const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const intervals = ["1m", "2m", "5m", "15m"];
+  let lastError = null;
 
-  const result = await yahooFinance.chart(symbol, {
-    period1: start,
-    period2: end,
-    interval: "1m",
-  });
+  for (const interval of intervals) {
+    try {
+      const result = await yahooFinance.chart(normalizedSymbol, {
+        period1: start,
+        period2: end,
+        interval,
+      });
 
-  return (result.quotes || [])
-    .filter((q) => q.open != null && q.close != null)
-    .map((q) => ({
-      time: Math.floor(new Date(q.date).getTime() / 1000),
-      open: parseFloat(q.open.toFixed(2)),
-      high: parseFloat(q.high.toFixed(2)),
-      low: parseFloat(q.low.toFixed(2)),
-      close: parseFloat(q.close.toFixed(2)),
-      volume: q.volume || 0,
-      date: new Date(q.date).toISOString(),
-    }));
+      const candles = (result.quotes || [])
+        .filter((q) => q.open != null && q.close != null)
+        .map((q) => ({
+          time: Math.floor(new Date(q.date).getTime() / 1000),
+          open: parseFloat(q.open.toFixed(2)),
+          high: parseFloat(q.high.toFixed(2)),
+          low: parseFloat(q.low.toFixed(2)),
+          close: parseFloat(q.close.toFixed(2)),
+          volume: q.volume || 0,
+          date: new Date(q.date).toISOString(),
+        }));
+
+      if (candles.length > 0) {
+        return candles;
+      }
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (lastError) throw lastError;
+  return [];
 }
 
 function aggregateCandles(candles, intervalSeconds) {
@@ -510,6 +732,7 @@ function aggregateCandles(candles, intervalSeconds) {
 }
 
 async function fetchIntradayHistoryCandles(symbol, { range, interval }) {
+  const normalizedSymbol = normalizeResolvedSymbol(symbol, symbol);
   const normalizedInterval = normalizeIntradayInterval(interval);
   const targetSeconds = getIntradayIntervalSeconds(normalizedInterval);
 
@@ -521,19 +744,28 @@ async function fetchIntradayHistoryCandles(symbol, { range, interval }) {
 
   let result;
   try {
-    result = await yahooFinance.chart(symbol, {
+    result = await yahooFinance.chart(normalizedSymbol, {
       period1,
       period2,
       interval: sourceInterval,
     });
   } catch (err) {
     // Fallback for symbols/ranges where Yahoo rejects source interval.
-    const fallbackInterval = "5m";
-    result = await yahooFinance.chart(symbol, {
-      period1: getPeriodStart(range, fallbackInterval),
-      period2,
-      interval: fallbackInterval,
-    });
+    try {
+      const fallbackInterval = "5m";
+      result = await yahooFinance.chart(normalizedSymbol, {
+        period1: getPeriodStart(range, fallbackInterval),
+        period2,
+        interval: fallbackInterval,
+      });
+    } catch (_) {
+      // Last fallback for index symbols that often only expose daily candles.
+      result = await yahooFinance.chart(normalizedSymbol, {
+        period1: getPeriodStart("1mo", "1d"),
+        period2,
+        interval: "1d",
+      });
+    }
   }
 
   const baseCandles = (result.quotes || [])
@@ -779,97 +1011,218 @@ function round2(value) {
   return Number(Number(value).toFixed(2));
 }
 
-async function resolveSymbol(input) {
-  const upper = input.toUpperCase().trim();
-  const cacheKey = `resolve:${upper}`;
+async function buildQuickHistory(symbol) {
+  try {
+    const candles = await fetchIntradayHistoryCandles(symbol, {
+      range: "1d",
+      interval: "5m",
+    });
+    const sessionCandles = filterToCurrentOrLastTradingSession(candles, {
+      timeZone: MARKET_TIME_ZONE,
+      openMinute: MARKET_OPEN_MINUTE,
+      closeMinute: MARKET_CLOSE_MINUTE,
+    });
 
+    return (sessionCandles || []).slice(-120);
+  } catch (err) {
+    console.warn(`[buildQuickHistory] Failed for ${symbol}:`, err.message);
+    return [];
+  }
+}
+
+function getLastClose(candles = []) {
+  const last = candles[candles.length - 1];
+  const close = Number(last?.close);
+  return Number.isFinite(close) ? close : 0;
+}
+
+function getDirectionFromCandles(candles = []) {
+  if (!Array.isArray(candles) || candles.length < 2) return "UP";
+  const last = Number(candles[candles.length - 1]?.close);
+  const prev = Number(candles[candles.length - 2]?.close);
+  if (!Number.isFinite(last) || !Number.isFinite(prev)) return "UP";
+  return last >= prev ? "UP" : "DOWN";
+}
+
+function buildFallbackPrediction(symbol, candles = [], reason = "Prediction service unavailable") {
+  const currentPrice = getLastClose(candles);
+  return {
+    success: false,
+    symbol: String(symbol || "").toUpperCase(),
+    direction: getDirectionFromCandles(candles),
+    confidence: 0,
+    current_price: round2(currentPrice),
+    target_price: round2(currentPrice),
+    message: reason,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildFallbackPredictionPayload(candles = [], steps = DEFAULT_CHART_STEPS, reason = "Prediction service unavailable") {
+  const currentPrice = getLastClose(candles);
+  return {
+    direction: getDirectionFromCandles(candles),
+    confidence: 0,
+    current_price: round2(currentPrice),
+    target_price: round2(currentPrice),
+    processing_time_ms: 0,
+    predicted_candles: [],
+    steps,
+    message: reason,
+  };
+}
+
+function buildFallbackChartPrediction(symbol, candles = [], steps = DEFAULT_CHART_STEPS, reason = "Prediction service unavailable") {
+  const payload = buildFallbackPredictionPayload(candles, steps, reason);
+  return {
+    success: false,
+    symbol: String(symbol || "").toUpperCase(),
+    ...payload,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildFallbackTimeframeResponse({
+  symbol,
+  timeframe,
+  historicalData = [],
+  intervalSeconds,
+  steps,
+  message,
+}) {
+  const lastHistoricalCandle = historicalData[historicalData.length - 1];
+  const fallbackDirection = !lastHistoricalCandle
+    ? "UP"
+    : (Number(lastHistoricalCandle.close) >= Number(lastHistoricalCandle.open) ? "UP" : "DOWN");
+  const fallbackCurrentPrice = Number(lastHistoricalCandle?.close) || 0;
+  const predictedData = buildPredictedDataForTimeframe({
+    basePredictedCandles: [],
+    lastHistoricalCandle,
+    intervalSeconds,
+    fallbackDirection,
+    fallbackCurrentPrice,
+  });
+
+  return {
+    success: false,
+    symbol: String(symbol || "").toUpperCase(),
+    timeframe,
+    historicalData,
+    predictedData,
+    predictionMeta: {
+      direction: fallbackDirection,
+      confidence: 0,
+      currentPrice: round2(fallbackCurrentPrice),
+      targetPrice: round2(fallbackCurrentPrice),
+      processingTimeMs: 0,
+      steps: predictedData.length,
+    },
+    message,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function resolveSymbol(input) {
+  const upper = normalizeIncomingSymbol(input);
+  if (!upper) {
+    throw new Error("Invalid symbol");
+  }
+
+  const cacheKey = `resolve:${upper}`;
   const cached = await safeCache.get(cacheKey);
   if (cached) return cached;
 
-  // --- Fast path: if it already has a suffix (.NS, .BO), validate & return ---
+  if (isDirectYahooSymbol(upper)) {
+    try {
+      const q = await yahooFinance.quote(upper);
+      const resolved = normalizeResolvedSymbol(q?.symbol || upper, upper);
+      await safeCache.set(cacheKey, resolved, 3600);
+      return resolved;
+    } catch (_) {
+      console.warn(`[resolveSymbol] Direct quote(${upper}) failed, using raw symbol`);
+      await safeCache.set(cacheKey, upper, 600);
+      return upper;
+    }
+  }
+
   if (upper.includes(".")) {
     try {
       const q = await yahooFinance.quote(upper);
       if (q && q.symbol) {
-        await safeCache.set(cacheKey, q.symbol, 3600);
-        return q.symbol;
+        const resolved = normalizeResolvedSymbol(q.symbol, upper);
+        await safeCache.set(cacheKey, resolved, 3600);
+        return resolved;
       }
-    } catch (_) { }
+    } catch (_) {}
+
     await safeCache.set(cacheKey, upper, 3600);
     return upper;
   }
 
-  // --- Fast path: check local Indian stocks list first (no network needed) ---
   if (symbolMap.has(upper)) {
     const resolved = `${upper}.NS`;
-    console.log(`[resolveSymbol] Local match: ${upper} → ${resolved}`);
+    console.log(`[resolveSymbol] Local match: ${upper} -> ${resolved}`);
     await safeCache.set(cacheKey, resolved, 3600);
     return resolved;
   }
 
-  // --- Try Yahoo quote with bare symbol ---
   try {
     const q = await yahooFinance.quote(upper);
     if (q && q.symbol) {
-      await safeCache.set(cacheKey, q.symbol, 3600);
-      return q.symbol;
+      const resolved = normalizeResolvedSymbol(q.symbol, upper);
+      await safeCache.set(cacheKey, resolved, 3600);
+      return resolved;
     }
   } catch (_) {
     console.warn(`[resolveSymbol] Yahoo quote(${upper}) failed, trying .NS`);
   }
 
-  // --- Try with .NS suffix directly (common for Indian stocks) ---
   const nsSymbol = `${upper}.NS`;
   try {
     const q = await yahooFinance.quote(nsSymbol);
     if (q && q.symbol) {
-      console.log(`[resolveSymbol] .NS fallback success: ${upper} → ${q.symbol}`);
-      await safeCache.set(cacheKey, q.symbol, 3600);
-      return q.symbol;
+      const resolved = normalizeResolvedSymbol(q.symbol, upper);
+      console.log(`[resolveSymbol] .NS fallback success: ${upper} -> ${resolved}`);
+      await safeCache.set(cacheKey, resolved, 3600);
+      return resolved;
     }
   } catch (_) {
     console.warn(`[resolveSymbol] Yahoo quote(${nsSymbol}) also failed`);
   }
 
-  // --- Try Yahoo search as last resort ---
   try {
     const results = await yahooFinance.search(upper);
-    const equities = (results.quotes || []).filter(
-      (q) => q.quoteType === "EQUITY"
-    );
+    const quotes = results.quotes || [];
+    if (quotes.length > 0) {
+      const exactMatch = quotes.find((q) => String(q.symbol || "").toUpperCase() === upper);
+      const indianMatch = quotes.find((q) => {
+        const symbol = String(q.symbol || "").toUpperCase();
+        return (
+          (symbol.endsWith(".NS") || symbol.endsWith(".BO")) &&
+          symbol.replace(/\.(NS|BO)$/, "") === upper
+        );
+      });
 
-    if (equities.length > 0) {
-      const indianMatch = equities.find(
-        (q) =>
-          (q.symbol.endsWith(".NS") || q.symbol.endsWith(".BO")) &&
-          q.symbol.replace(/\.(NS|BO)$/, "").toUpperCase() === upper
-      );
-      if (indianMatch) {
-        await safeCache.set(cacheKey, indianMatch.symbol, 3600);
-        return indianMatch.symbol;
+      const picked = indianMatch || exactMatch || quotes[0];
+      if (picked?.symbol) {
+        const resolved = normalizeResolvedSymbol(picked.symbol, upper);
+        await safeCache.set(cacheKey, resolved, 3600);
+        return resolved;
       }
-
-      const exactMatch = equities.find(
-        (q) => q.symbol.toUpperCase() === upper
-      );
-      if (exactMatch) {
-        await safeCache.set(cacheKey, exactMatch.symbol, 3600);
-        return exactMatch.symbol;
-      }
-
-      await safeCache.set(cacheKey, equities[0].symbol, 3600);
-      return equities[0].symbol;
     }
   } catch (_) {
     console.warn(`[resolveSymbol] Yahoo search(${upper}) failed`);
   }
 
-  // --- Ultimate fallback: assume Indian stock ---
+  if (isDirectYahooSymbol(upper)) {
+    await safeCache.set(cacheKey, upper, 600);
+    return upper;
+  }
+
   console.warn(`[resolveSymbol] All lookups failed for ${upper}, defaulting to ${nsSymbol}`);
   await safeCache.set(cacheKey, nsSymbol, 600);
   return nsSymbol;
 }
-
 function formatLargeNumber(num) {
   if (!num) return "-";
   if (num >= 1e12) return (num / 1e12).toFixed(2) + "T";
