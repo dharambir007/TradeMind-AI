@@ -5,6 +5,7 @@ const authMiddleware = require("../middleware/auth");
 const YahooFinance = require("yahoo-finance2").default;
 const yahooFinance = new YahooFinance();
 const { cache } = require("../config/redis");
+const { normalizeSymbol, stripExchangeSuffix } = require("../utils/symbolNormalizer");
 
 const safeCache = {
   async get(key) { try { return await cache.get(key); } catch { return null; } },
@@ -28,10 +29,7 @@ router.get("/", authMiddleware, async (req, res) => {
         if (cached) return { ...cached, addedAt: entry.addedAt };
 
         try {
-          let yahooSym = sym;
-          if (!sym.includes(".")) {
-            yahooSym = `${sym}.NS`;
-          }
+          const yahooSym = normalizeSymbol(sym);
 
           const quote = await yahooFinance.quote(yahooSym);
           const data = {
@@ -75,7 +73,7 @@ router.post("/", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "Symbol is required" });
     }
 
-    const cleanSymbol = symbol.replace(/\.(NS|BO)$/, "").toUpperCase().trim();
+    const cleanSymbol = stripExchangeSuffix(normalizeSymbol(symbol));
 
     const user = await User.findById(req.user._id);
 
@@ -101,7 +99,7 @@ router.post("/", authMiddleware, async (req, res) => {
 // remove stock from watchlist
 router.delete("/:symbol", authMiddleware, async (req, res) => {
   try {
-    const cleanSymbol = req.params.symbol.replace(/\.(NS|BO)$/, "").toUpperCase().trim();
+    const cleanSymbol = stripExchangeSuffix(normalizeSymbol(req.params.symbol));
 
     const user = await User.findById(req.user._id);
 

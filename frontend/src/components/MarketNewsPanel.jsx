@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion as Motion, AnimatePresence } from "framer-motion";
 import apiClient from "../services/api";
 
 const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 min
@@ -136,7 +136,7 @@ function NewsCard({ article, index }) {
   const hasImage = !!article.image;
 
   return (
-    <motion.a
+    <Motion.a
       href={article.url}
       target="_blank"
       rel="noopener noreferrer"
@@ -199,7 +199,7 @@ function NewsCard({ article, index }) {
           <span>{timeAgo(article.publishedAt)}</span>
         </div>
       </div>
-    </motion.a>
+    </Motion.a>
   );
 }
 

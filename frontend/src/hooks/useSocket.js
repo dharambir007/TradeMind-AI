@@ -64,10 +64,11 @@ function releaseSocket() {
 export function useSocket(symbol) {
     const socketRef = useRef(null);
     const [tick, setTick] = useState(null);
-    const [connected, setConnected] = useState(false);
+    const [connected, setConnected] = useState(() => Boolean(sharedSocket?.connected));
     const currentSymbol = useRef(null);
     const pendingTickRef = useRef(null);
     const tickRafRef = useRef(null);
+    const resetTickFrameRef = useRef(null);
 
     useEffect(() => {
         const socket = getSocket();
@@ -98,7 +99,9 @@ export function useSocket(symbol) {
         socket.on("disconnect", onDisconnect);
         socket.on("tick", onTick);
 
-        if (socket.connected) setConnected(true);
+        if (socket.connected) {
+            requestAnimationFrame(() => setConnected(true));
+        }
 
         return () => {
             socket.off("connect", onConnect);
@@ -109,6 +112,10 @@ export function useSocket(symbol) {
                 tickRafRef.current = null;
             }
             pendingTickRef.current = null;
+            if (resetTickFrameRef.current) {
+                cancelAnimationFrame(resetTickFrameRef.current);
+                resetTickFrameRef.current = null;
+            }
             if (currentSymbol.current) {
                 socket.emit("unsubscribe", currentSymbol.current);
                 currentSymbol.current = null;
@@ -129,7 +136,13 @@ export function useSocket(symbol) {
             const yahooSymbol = normalizeSocketSymbol(symbol);
             socket.emit("subscribe", yahooSymbol);
             currentSymbol.current = yahooSymbol;
-            setTick(null);
+            if (resetTickFrameRef.current) {
+                cancelAnimationFrame(resetTickFrameRef.current);
+            }
+            resetTickFrameRef.current = requestAnimationFrame(() => {
+                resetTickFrameRef.current = null;
+                setTick(null);
+            });
         }
     }, [symbol]);
 

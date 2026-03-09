@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { motion } from "framer-motion";
+import { motion as Motion } from "framer-motion";
 import { getCurrencySymbol, formatPrice } from "../utils/formatters";
 
 const StockHeader = memo(({ stock }) => {
@@ -16,7 +16,7 @@ const StockHeader = memo(({ stock }) => {
   ];
 
   return (
-    <motion.section
+    <Motion.section
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       style={{
@@ -53,7 +53,7 @@ const StockHeader = memo(({ stock }) => {
           </div>
 
           {/* Price with animated flash */}
-          <motion.p
+          <Motion.p
             key={stock.price}
             initial={{ opacity: 0.7, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -65,10 +65,10 @@ const StockHeader = memo(({ stock }) => {
             }}
           >
             {formatPrice(stock.price, cur)}
-          </motion.p>
+          </Motion.p>
 
           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px" }}>
-            <motion.span
+            <Motion.span
               initial={{ scale: 0.9 }}
               animate={{ scale: 1 }}
               style={{
@@ -85,7 +85,7 @@ const StockHeader = memo(({ stock }) => {
                 <polyline points="18 15 12 9 6 15" />
               </svg>
               {isUp ? "+" : ""}{delta}
-            </motion.span>
+            </Motion.span>
           </div>
         </div>
 
@@ -94,7 +94,7 @@ const StockHeader = memo(({ stock }) => {
           fontSize: "13px",
         }}>
           {metaItems.map((item, i) => (
-            <motion.div
+            <Motion.div
               key={i}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
@@ -102,11 +102,11 @@ const StockHeader = memo(({ stock }) => {
             >
               <dt style={{ color: "#3b4260", fontSize: "11px", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.06em" }}>{item.label}</dt>
               <dd style={{ fontWeight: 600, color: "#8b93a7", marginTop: "3px", fontFeatureSettings: '"tnum" 1' }}>{item.value}</dd>
-            </motion.div>
+            </Motion.div>
           ))}
         </div>
       </div>
-    </motion.section>
+    </Motion.section>
   );
 });
 

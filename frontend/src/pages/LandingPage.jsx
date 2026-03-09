@@ -1,16 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 
 const LandingPage = () => {
-  const [scrollY, setScrollY] = useState(0);
-  const [visible, setVisible] = useState(false);
+  const [visible] = useState(true);
   const heroRef = useRef(null);
 
-  useEffect(() => {
-    setVisible(true);
-    const handleScroll = () => setScrollY(window.scrollY);
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
+  useEffect(() => undefined, []);
 
   const features = [
     {

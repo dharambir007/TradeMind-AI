@@ -1,5 +1,5 @@
 import { useState, useEffect, memo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion as Motion, AnimatePresence } from "framer-motion";
 import apiClient from "../services/api";
 import { fetchAIInsight } from "../services/aiService";
 import LoadingSkeleton from "./LoadingSkeleton";
@@ -135,7 +135,7 @@ const AISignalsPanel = memo(({ symbol }) => {
                         AI Signals
                     </h4>
                 </div>
-                <motion.span
+                <Motion.span
                     animate={{ opacity: [0.7, 1, 0.7] }}
                     transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
                     style={{
@@ -146,7 +146,7 @@ const AISignalsPanel = memo(({ symbol }) => {
                     }}
                 >
                     ML + NEWS
-                </motion.span>
+                </Motion.span>
             </div>
 
             {loading && (
@@ -157,7 +157,7 @@ const AISignalsPanel = memo(({ symbol }) => {
             )}
 
             {!loading && error && (
-                <motion.div
+                <Motion.div
                     initial={{ opacity: 0, scale: 0.95 }}
                     animate={{ opacity: 1, scale: 1 }}
                     transition={easeOutExpo}
@@ -170,12 +170,12 @@ const AISignalsPanel = memo(({ symbol }) => {
                     <p style={{ fontSize: "11px", color: "#2a3050", marginTop: "4px" }}>
                         ML service may be offline
                     </p>
-                </motion.div>
+                </Motion.div>
             )}
 
             <AnimatePresence mode="wait">
                 {!loading && (prediction || aiInsight) && (
-                    <motion.div
+                    <Motion.div
                         key={`${symbolKey}-${prediction?.direction || prediction?.predicted_direction || "insight"}`}
                         initial={{ opacity: 0, y: 12 }}
                         animate={{ opacity: 1, y: 0 }}
@@ -185,7 +185,7 @@ const AISignalsPanel = memo(({ symbol }) => {
                     >
                         {prediction && (
                             <>
-                                <motion.div
+                                <Motion.div
                                     whileHover={{ scale: 1.01 }}
                                     style={{
                                         borderRadius: "12px",
@@ -204,7 +204,7 @@ const AISignalsPanel = memo(({ symbol }) => {
                                     <p style={{ fontSize: "11px", color: "#505872", marginTop: "4px" }}>
                                         Predicted Direction
                                     </p>
-                                </motion.div>
+                                </Motion.div>
 
                                 {(prediction.confidence != null || prediction.probability != null) && (
                                     <div style={{
@@ -221,7 +221,7 @@ const AISignalsPanel = memo(({ symbol }) => {
                                             height: "5px", borderRadius: "3px",
                                             background: "rgba(255,255,255,0.04)", overflow: "hidden",
                                         }}>
-                                            <motion.div
+                                            <Motion.div
                                                 initial={{ width: 0 }}
                                                 animate={{ width: `${safeConfidencePct}%` }}
                                                 transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1], delay: 0.2 }}
@@ -321,7 +321,7 @@ const AISignalsPanel = memo(({ symbol }) => {
                         }}>
                             AI outputs are informational only. Not financial advice.
                         </p>
-                    </motion.div>
+                    </Motion.div>
                 )}
             </AnimatePresence>
         </section>

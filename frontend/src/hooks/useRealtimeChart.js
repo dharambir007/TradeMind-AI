@@ -98,6 +98,7 @@ export function useRealtimeChart({
         try {
             candleSeriesRef.current.update(updatedCandle);
         } catch {
+            // Series may not be ready during initial mount.
         }
 
         // consume predicted candles that are now in the past

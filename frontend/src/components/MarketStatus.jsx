@@ -1,5 +1,5 @@
 import { useState, useEffect, memo } from 'react';
-import { motion } from 'framer-motion';
+import { motion as Motion } from 'framer-motion';
 import { getMarketStatus } from '../services/marketService';
 
 const MarketStatus = memo(() => {
@@ -10,7 +10,7 @@ const MarketStatus = memo(() => {
       try {
         const data = await getMarketStatus();
         setStatus(data);
-      } catch (error) {
+      } catch {
         console.error('Failed to fetch market status');
       }
     };
@@ -29,7 +29,7 @@ const MarketStatus = memo(() => {
       display: "inline-flex", alignItems: "center", gap: "8px",
       fontSize: "12px", color: "#8b93a7",
     }}>
-      <motion.span
+      <Motion.span
         animate={isOpen ? {
           scale: [1, 1.3, 1],
           opacity: [1, 0.6, 1],

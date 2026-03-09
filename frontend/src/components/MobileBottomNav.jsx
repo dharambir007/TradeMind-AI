@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { motion } from "framer-motion";
+import { motion as Motion } from "framer-motion";
 
 const tabs = [
     {
@@ -73,7 +73,7 @@ const MobileBottomNav = memo(({ activeTab, onTabChange }) => {
             {tabs.map((tab) => {
                 const isActive = activeTab === tab.id;
                 return (
-                    <motion.button
+                    <Motion.button
                         key={tab.id}
                         onClick={() => onTabChange(tab.id)}
                         whileTap={{ scale: 0.92 }}
@@ -92,7 +92,7 @@ const MobileBottomNav = memo(({ activeTab, onTabChange }) => {
                     >
                         {/* Active indicator dot */}
                         {isActive && (
-                            <motion.div
+                            <Motion.div
                                 layoutId="mobile-tab-indicator"
                                 style={{
                                     position: "absolute", top: "-1px", left: "50%",
@@ -104,19 +104,19 @@ const MobileBottomNav = memo(({ activeTab, onTabChange }) => {
                                 transition={{ type: "spring", stiffness: 400, damping: 30 }}
                             />
                         )}
-                        <motion.span
+                        <Motion.span
                             animate={{ scale: isActive ? 1.1 : 1 }}
                             transition={{ type: "spring", stiffness: 300, damping: 20 }}
                         >
                             {tab.icon}
-                        </motion.span>
+                        </Motion.span>
                         <span style={{
                             fontSize: "9px", fontWeight: isActive ? 700 : 500,
                             letterSpacing: "0.02em",
                         }}>
                             {tab.label}
                         </span>
-                    </motion.button>
+                    </Motion.button>
                 );
             })}
         </nav>

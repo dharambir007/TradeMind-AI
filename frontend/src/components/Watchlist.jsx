@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, memo } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion as Motion, AnimatePresence } from "framer-motion";
 import apiClient from "../services/api";
 import { easeOutExpo } from "../utils/animations";
 
@@ -130,7 +130,7 @@ const Watchlist = memo(({ onStockClick }) => {
       setDeletingSymbol(symbol);
       await apiClient.delete(`/watchlist/${encodeURIComponent(symbol)}`);
       setItems((prev) => prev.filter((i) => i.symbol !== symbol));
-    } catch (err) {
+    } catch {
       setError("Failed to remove");
       setTimeout(() => setError(""), 3000);
     } finally {
@@ -217,7 +217,7 @@ const Watchlist = memo(({ onStockClick }) => {
         {/* Search dropdown */}
         <AnimatePresence>
           {searchOpen && searchResults.length > 0 && (
-            <motion.div
+            <Motion.div
               initial={{ opacity: 0, y: -4, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -4, scale: 0.97 }}
@@ -235,7 +235,7 @@ const Watchlist = memo(({ onStockClick }) => {
               {searchResults.slice(0, 6).map((item) => {
                 const displaySymbol = item.symbol.replace(/\.(NS|BO)$/, "");
                 return (
-                  <motion.div
+                  <Motion.div
                     key={item.symbol}
                     onMouseDown={(e) => { e.preventDefault(); handleAdd(item.symbol); }}
                     whileHover={{ backgroundColor: "rgba(0,212,255,0.04)" }}
@@ -250,7 +250,7 @@ const Watchlist = memo(({ onStockClick }) => {
                         {item.name}
                       </p>
                     </div>
-                    <motion.button
+                    <Motion.button
                       disabled={adding}
                       whileHover={{ scale: 1.05, backgroundColor: "rgba(16,185,129,0.2)" }}
                       whileTap={{ scale: 0.95 }}
@@ -262,11 +262,11 @@ const Watchlist = memo(({ onStockClick }) => {
                       }}
                     >
                       + Add
-                    </motion.button>
-                  </motion.div>
+                    </Motion.button>
+                  </Motion.div>
                 );
               })}
-            </motion.div>
+            </Motion.div>
           )}
         </AnimatePresence>
       </div>
@@ -274,7 +274,7 @@ const Watchlist = memo(({ onStockClick }) => {
       {/* Error toast */}
       <AnimatePresence>
         {error && (
-          <motion.div
+          <Motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
@@ -285,7 +285,7 @@ const Watchlist = memo(({ onStockClick }) => {
             }}
           >
             {error}
-          </motion.div>
+          </Motion.div>
         )}
       </AnimatePresence>
 
@@ -310,7 +310,7 @@ const Watchlist = memo(({ onStockClick }) => {
               const up = (item.changePercent || 0) >= 0;
               const isDeleting = deletingSymbol === item.symbol;
               return (
-                <motion.div
+                <Motion.div
                   key={item.symbol}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: isDeleting ? 0.4 : 1, y: 0 }}
@@ -389,7 +389,7 @@ const Watchlist = memo(({ onStockClick }) => {
                     )}
 
                     {/* Delete button — visible on hover */}
-                    <motion.button
+                    <Motion.button
                       className="wl-delete"
                       onClick={(e) => { e.stopPropagation(); handleDelete(item.symbol); }}
                       disabled={isDeleting}
@@ -409,15 +409,15 @@ const Watchlist = memo(({ onStockClick }) => {
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                         <path d="M18 6L6 18M6 6l12 12" />
                       </svg>
-                    </motion.button>
+                    </Motion.button>
                   </div>
-                </motion.div>
+                </Motion.div>
               );
             })}
           </AnimatePresence>
 
           {!items.length && !loading && (
-            <motion.div
+            <Motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={easeOutExpo}
@@ -431,7 +431,7 @@ const Watchlist = memo(({ onStockClick }) => {
               </svg>
               <p>Your watchlist is empty</p>
               <p style={{ fontSize: "11px", color: "#1e2540", marginTop: "4px" }}>Search and add stocks above</p>
-            </motion.div>
+            </Motion.div>
           )}
         </div>
       )}

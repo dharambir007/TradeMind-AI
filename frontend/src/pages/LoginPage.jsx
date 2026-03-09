@@ -9,6 +9,8 @@ const LoginPage = () => {
   const [error, setError] = useState('');
   const [focusedField, setFocusedField] = useState(null);
 
+  useEffect(() => undefined, []);
+
   const handleChange = (event) => {
     const { name, value } = event.target;
     setForm((prev) => ({ ...prev, [name]: value }));

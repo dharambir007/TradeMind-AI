@@ -1,10 +1,9 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
-import axios from "axios";
+import { motion as Motion, AnimatePresence } from "framer-motion";
 import Navbar from "../components/Navbar";
 import Sidebar from "../components/Sidebar";
-import CandleChart from "../components/CandleChart";
+import TradingChart from "../components/TradingChart";
 import StockHeader from "../components/StockHeader";
 import Watchlist from "../components/Watchlist";
 import MarketStatus from "../components/MarketStatus";
@@ -13,11 +12,7 @@ import MarketNewsPanel from "../components/MarketNewsPanel";
 import MobileBottomNav from "../components/MobileBottomNav";
 import LoadingSkeleton from "../components/LoadingSkeleton";
 import { fadeInUp, slideInLeft, slideInRight, easeOutExpo } from "../utils/animations";
-
-const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || "/api",
-  timeout: 8000,
-});
+import apiClient from "../services/api";
 
 const MOCK_STOCK_BASE = {
   symbol: "RELIANCE",
@@ -39,7 +34,7 @@ const UserDashboard = () => {
     if (!raw) return "RELIANCE";
     try {
       return decodeURIComponent(raw).toUpperCase();
-    } catch (_) {
+    } catch {
       return raw.toUpperCase();
     }
   }, [routeSymbol]);
@@ -96,7 +91,7 @@ const UserDashboard = () => {
         }
         setError("");
       } catch (err) {
-        if (!active || err?.name === "CanceledError" || axios.isCancel(err)) return;
+        if (!active || err?.name === "CanceledError" || err?.code === "ERR_CANCELED") return;
         console.error("Failed to load live data", err);
         setError("Live data unavailable. Showing sample data.");
         setStock(buildFallbackStock(symbol));
@@ -165,7 +160,7 @@ const UserDashboard = () => {
               </div>
             )}
             <div className="animate-fade-in-up delay-100" style={{ padding: "0 16px", marginTop: "12px" }}>
-              <CandleChart symbol={symbol} currency={stock?.currency} />
+              <TradingChart symbol={symbol} currency={stock?.currency} />
             </div>
           </>
         );
@@ -193,7 +188,7 @@ const UserDashboard = () => {
       <Navbar />
 
       {/* Settings FAB */}
-      <motion.button
+      <Motion.button
         onClick={() => setSettingsOpen(true)}
         whileHover={{ y: -2, scale: 1.06, boxShadow: "0 12px 40px rgba(99,102,241,0.4)" }}
         whileTap={{ scale: 0.95 }}
@@ -213,7 +208,7 @@ const UserDashboard = () => {
           <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
           <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
         </svg>
-      </motion.button>
+      </Motion.button>
 
       <Sidebar isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
@@ -221,7 +216,7 @@ const UserDashboard = () => {
       {isMobile && (
         <main style={{ position: "relative", zIndex: 1, paddingTop: "8px", paddingBottom: "72px" }}>
           {/* Mobile header */}
-          <motion.header
+          <Motion.header
             initial={{ opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={easeOutExpo}
@@ -258,12 +253,12 @@ const UserDashboard = () => {
               )}
               <MarketStatus />
             </div>
-          </motion.header>
+          </Motion.header>
 
           {/* Error banner */}
           <AnimatePresence>
             {error && (
-              <motion.div
+              <Motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
@@ -278,12 +273,12 @@ const UserDashboard = () => {
                   <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
                 </svg>
                 {error}
-              </motion.div>
+              </Motion.div>
             )}
           </AnimatePresence>
 
           <AnimatePresence mode="wait">
-            <motion.div
+            <Motion.div
               key={mobileTab}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
@@ -291,7 +286,7 @@ const UserDashboard = () => {
               transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
             >
               {renderMobileContent()}
-            </motion.div>
+            </Motion.div>
           </AnimatePresence>
           <MobileBottomNav activeTab={mobileTab} onTabChange={setMobileTab} />
         </main>
@@ -310,7 +305,7 @@ const UserDashboard = () => {
           minHeight: "calc(100vh - 56px)",
         }}>
           {/* watchlist sidebar */}
-          <motion.aside
+          <Motion.aside
             initial={slideInLeft.initial}
             animate={slideInLeft.animate}
             transition={slideInLeft.transition}
@@ -322,10 +317,10 @@ const UserDashboard = () => {
             }}
           >
             <Watchlist onStockClick={handleStockClick} />
-          </motion.aside>
+          </Motion.aside>
 
           {/* chart area */}
-          <motion.div
+          <Motion.div
             initial={fadeInUp.initial}
             animate={fadeInUp.animate}
             transition={{ ...easeOutExpo, delay: 0.08 }}
@@ -348,7 +343,7 @@ const UserDashboard = () => {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 {loading && (
-                  <motion.span
+                  <Motion.span
                     initial={{ opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0 }}
@@ -363,7 +358,7 @@ const UserDashboard = () => {
                       <circle cx="12" cy="12" r="10" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" opacity="0.75" />
                     </svg>
                     Syncing...
-                  </motion.span>
+                  </Motion.span>
                 )}
                 {usingMock && (
                   <span style={{
@@ -380,7 +375,7 @@ const UserDashboard = () => {
             {/* Error banner */}
             <AnimatePresence>
               {error && (
-                <motion.div
+                <Motion.div
                   initial={{ opacity: 0, y: -8, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8 }}
@@ -396,25 +391,25 @@ const UserDashboard = () => {
                     <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
                   </svg>
                   {error}
-                </motion.div>
+                </Motion.div>
               )}
             </AnimatePresence>
 
             {/* Stock header */}
             {stock ? (
-              <motion.div
+              <Motion.div
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ ...easeOutExpo, delay: 0.14 }}
               >
                 <StockHeader stock={stock} />
-              </motion.div>
+              </Motion.div>
             ) : loading ? (
               <LoadingSkeleton variant="card" height="110px" />
             ) : null}
 
             {/* Chart with ambient glow */}
-            <motion.div
+            <Motion.div
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ ...easeOutExpo, delay: 0.2 }}
@@ -428,21 +423,21 @@ const UserDashboard = () => {
                 background: "radial-gradient(ellipse, rgba(0,212,255,0.03) 0%, transparent 70%)",
                 pointerEvents: "none", zIndex: 0, filter: "blur(40px)",
               }} />
-              <CandleChart symbol={symbol} currency={stock?.currency} />
-            </motion.div>
+              <TradingChart symbol={symbol} currency={stock?.currency} />
+            </Motion.div>
 
             {/* Market News */}
-            <motion.div
+            <Motion.div
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1], delay: 0.28 }}
             >
               <MarketNewsPanel />
-            </motion.div>
-          </motion.div>
+            </Motion.div>
+          </Motion.div>
 
           {/* ai signals sidebar */}
-          <motion.aside
+          <Motion.aside
             initial={slideInRight.initial}
             animate={slideInRight.animate}
             transition={slideInRight.transition}
@@ -454,7 +449,7 @@ const UserDashboard = () => {
             }}
           >
             <AISignalsPanel symbol={symbol} />
-          </motion.aside>
+          </Motion.aside>
         </main>
       )}
     </div>

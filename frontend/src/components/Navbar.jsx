@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion as Motion, AnimatePresence } from "framer-motion";
 import SearchBar from "./SearchBar";
 
 const Navbar = () => {
@@ -65,7 +65,7 @@ const Navbar = () => {
       position: "sticky", top: 0, zIndex: 40,
     }}>
       {/* logo */}
-      <motion.div
+      <Motion.div
         style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}
         onClick={() => navigate("/dashboard")}
         whileHover={{ scale: 1.02 }}
@@ -82,14 +82,14 @@ const Navbar = () => {
         <span style={{ fontSize: "16px", fontWeight: 700, color: "#f0f2f5", letterSpacing: "-0.03em" }}>
           Trade<span style={{ color: "#00d4ff" }}>Mind</span>
         </span>
-      </motion.div>
+      </Motion.div>
 
       {/* search */}
       <SearchBar />
 
       {/* user dropdown */}
       <div ref={dropdownRef} style={{ position: "relative" }}>
-        <motion.button
+        <Motion.button
           onClick={() => setDropdownOpen((prev) => !prev)}
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.97 }}
@@ -111,20 +111,20 @@ const Navbar = () => {
             {getInitials(user?.name)}
           </div>
           <span style={{ fontSize: "13px", fontWeight: 500 }}>{user?.name?.split(" ")[0] || "User"}</span>
-          <motion.svg
+          <Motion.svg
             animate={{ rotate: dropdownOpen ? 180 : 0 }}
             transition={{ duration: 0.2 }}
             style={{ width: "12px", height: "12px", color: "#505872" }}
             fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-          </motion.svg>
-        </motion.button>
+          </Motion.svg>
+        </Motion.button>
 
         {/* Dropdown */}
         <AnimatePresence>
           {dropdownOpen && (
-            <motion.div
+            <Motion.div
               initial={{ opacity: 0, scale: 0.95, y: -4 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -4 }}
@@ -144,7 +144,7 @@ const Navbar = () => {
                 <p style={{ fontSize: "11px", color: "#505872", marginTop: "2px" }}>{user?.email || ""}</p>
               </div>
 
-              <motion.button
+              <Motion.button
                 onClick={handleLogout}
                 whileHover={{ backgroundColor: "rgba(244,63,94,0.06)" }}
                 style={{
@@ -158,8 +158,8 @@ const Navbar = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
                 </svg>
                 Sign out
-              </motion.button>
-            </motion.div>
+              </Motion.button>
+            </Motion.div>
           )}
         </AnimatePresence>
       </div>

@@ -7,12 +7,14 @@ const {
   getStockPrediction,
   getChartPrediction,
   getChartPredictionByTimeframe,
+  getStockNewsBySymbol,
 } = require("../controllers/stockController");
 
 router.get("/search", searchStocks);
 router.post("/predict-chart", getChartPredictionByTimeframe);
 router.get("/:symbol/history", getStockHistory);
 router.get("/:symbol/prediction", getStockPrediction);
+router.get("/:symbol/news", getStockNewsBySymbol);
 router.get("/:symbol/predict-chart", getChartPrediction);
 router.get("/:symbol", getStock);
 

@@ -1,0 +1,1015 @@
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createChart,
+  CandlestickSeries,
+  HistogramSeries,
+} from "lightweight-charts";
+import { useSocket } from "../hooks/useSocket";
+import stockService from "../services/stockService";
+import { getCurrencySymbol } from "../utils/formatters";
+import {
+  DEFAULT_TRADING_TIMEFRAME,
+  TIMEFRAME_PRESETS,
+  buildVolumePoint,
+  formatAxisTime,
+  formatVolume,
+  getLiveCandleTime,
+  getTimeframePreset,
+  transformMarketDataToCandles,
+  transformPredictionToCandles,
+} from "../utils/chartTransforms";
+
+const CHART_HEIGHT = 460;
+const ERROR_MESSAGE = "Market data temporarily unavailable";
+const PREDICTION_ERROR_MESSAGE = "Failed to generate timeframe chart prediction";
+const PREDICTION_TIMEFRAME_OPTIONS = ["3m", "5m", "10m"];
+const DARK_SURFACE = "rgba(6, 12, 24, 0.9)";
+const DARK_BORDER = "rgba(73, 95, 132, 0.22)";
+const ACCENT_BLUE = "#58d8ff";
+const ACCENT_GREEN = "#16d6a1";
+const ACCENT_RED = "#ff4d57";
+const GHOST_UP = "rgba(22, 214, 161, 0.28)";
+const GHOST_DOWN = "rgba(255, 77, 87, 0.28)";
+const GHOST_UP_WICK = "rgba(22, 214, 161, 0.82)";
+const GHOST_DOWN_WICK = "rgba(255, 77, 87, 0.82)";
+
+function addCandlestickSeries(chart, options) {
+  if (typeof chart.addCandlestickSeries === "function") {
+    return chart.addCandlestickSeries(options);
+  }
+  return chart.addSeries(CandlestickSeries, options);
+}
+
+function addHistogramSeries(chart, options) {
+  if (typeof chart.addHistogramSeries === "function") {
+    return chart.addHistogramSeries(options);
+  }
+  return chart.addSeries(HistogramSeries, options);
+}
+
+function captureVisibleRange(chart) {
+  try {
+    return chart?.timeScale()?.getVisibleLogicalRange?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function restoreVisibleRange(chart, logicalRange) {
+  const timeScale = chart?.timeScale?.();
+  if (!timeScale) return;
+
+  requestAnimationFrame(() => {
+    try {
+      if (logicalRange && typeof timeScale.setVisibleLogicalRange === "function") {
+        timeScale.setVisibleLogicalRange(logicalRange);
+      } else {
+        timeScale.fitContent();
+      }
+    } catch {
+      try {
+        timeScale.fitContent();
+      } catch {
+        // no-op
+      }
+    }
+  });
+}
+
+function formatPrice(value, currencySymbol) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "--";
+  return `${currencySymbol}${numeric.toFixed(2)}`;
+}
+
+function formatSignedPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "--";
+  return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(2)}%`;
+}
+
+function toComparableTime(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+  }
+
+  if (value && typeof value === "object") {
+    const year = Number(value.year);
+    const month = Number(value.month);
+    const day = Number(value.day);
+    if ([year, month, day].every(Number.isFinite)) {
+      return Math.floor(Date.UTC(year, month - 1, day) / 1000);
+    }
+  }
+
+  return null;
+}
+
+function formatInfoTime(unixTime, timeframe) {
+  if (!Number.isFinite(Number(unixTime))) return "--";
+  const date = new Date(Number(unixTime) * 1000);
+  if (!Number.isFinite(date.getTime())) return "--";
+  return `${formatAxisTime(unixTime, timeframe)} | ${date.toLocaleDateString("en-GB")}`;
+}
+
+function updateTooltipContent({
+  container,
+  point,
+  candle,
+  volume,
+  currencySymbol,
+  timeframe,
+}) {
+  if (!container) return;
+
+  if (!point || !candle) {
+    container.style.opacity = "0";
+    return;
+  }
+
+  const timeLabel = formatAxisTime(candle.time, timeframe);
+  const volumeValue = Number(volume?.value ?? candle.volume ?? 0);
+
+  container.innerHTML = `
+    <div style="font-size:11px;color:#7b8ba7;margin-bottom:6px;">${timeLabel}</div>
+    <div style="display:grid;grid-template-columns:auto auto;gap:4px 12px;">
+      <span style="color:#7b8ba7;">O</span><span>${formatPrice(candle.open, currencySymbol)}</span>
+      <span style="color:#7b8ba7;">H</span><span>${formatPrice(candle.high, currencySymbol)}</span>
+      <span style="color:#7b8ba7;">L</span><span>${formatPrice(candle.low, currencySymbol)}</span>
+      <span style="color:#7b8ba7;">C</span><span>${formatPrice(candle.close, currencySymbol)}</span>
+      <span style="color:#7b8ba7;">Vol</span><span>${formatVolume(volumeValue)}</span>
+    </div>
+  `;
+
+  const parentWidth = container.parentElement?.clientWidth || 0;
+  const left = Math.max(12, Math.min(point.x + 16, parentWidth - 180));
+  const top = Math.max(12, point.y + 12);
+
+  container.style.transform = `translate(${left}px, ${top}px)`;
+  container.style.opacity = "1";
+}
+
+function ToolbarButton({ active, children, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        border: "none",
+        borderRadius: "10px",
+        padding: "7px 10px",
+        background: active ? "rgba(0, 212, 255, 0.14)" : "transparent",
+        color: active ? ACCENT_BLUE : "#7b8ba7",
+        fontSize: "12px",
+        fontWeight: 700,
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
+  const sectionRef = useRef(null);
+  const chartHostRef = useRef(null);
+  const chartRef = useRef(null);
+  const candleSeriesRef = useRef(null);
+  const volumeSeriesRef = useRef(null);
+  const predictionSeriesRef = useRef(null);
+  const resizeObserverRef = useRef(null);
+  const tooltipRef = useRef(null);
+  const requestIdRef = useRef(0);
+  const pendingRangeRef = useRef(null);
+  const candlesRef = useRef([]);
+  const lastCandleRef = useRef(null);
+  const timeframeRef = useRef(DEFAULT_TRADING_TIMEFRAME);
+
+  const currencySymbol = useMemo(() => getCurrencySymbol(currency), [currency]);
+  const [timeframe, setTimeframe] = useState(DEFAULT_TRADING_TIMEFRAME);
+  const [predictionTimeframe, setPredictionTimeframe] = useState(
+    getTimeframePreset(DEFAULT_TRADING_TIMEFRAME).predictionTimeframe
+  );
+  const [loading, setLoading] = useState(true);
+  const [predictionLoading, setPredictionLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [predictionError, setPredictionError] = useState("");
+  const [lastPrice, setLastPrice] = useState(null);
+  const [sessionOpenPrice, setSessionOpenPrice] = useState(null);
+  const [lastCandleTime, setLastCandleTime] = useState(null);
+  const [predictionMeta, setPredictionMeta] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const { tick, connected } = useSocket(symbol);
+
+  useEffect(() => {
+    timeframeRef.current = timeframe;
+  }, [timeframe]);
+
+  useEffect(() => {
+    setPredictionTimeframe(getTimeframePreset(timeframe).predictionTimeframe);
+  }, [timeframe]);
+
+  useEffect(() => {
+    const container = chartHostRef.current;
+    if (!container) return;
+
+    const chart = createChart(container, {
+      width: container.clientWidth,
+      height: container.clientHeight || CHART_HEIGHT,
+      layout: {
+        background: { type: "solid", color: "#050b17" },
+        textColor: "#63748f",
+        fontFamily: "'Segoe UI', sans-serif",
+        fontSize: 12,
+      },
+      grid: {
+        vertLines: { color: "rgba(29, 44, 70, 0.28)" },
+        horzLines: { color: "rgba(29, 44, 70, 0.28)" },
+      },
+      rightPriceScale: {
+        borderColor: "rgba(73, 95, 132, 0.2)",
+        autoScale: true,
+        scaleMargins: { top: 0.12, bottom: 0.24 },
+      },
+      timeScale: {
+        borderColor: "rgba(73, 95, 132, 0.2)",
+        rightOffset: 8,
+        barSpacing: 10,
+        minBarSpacing: 4,
+        lockVisibleTimeRangeOnResize: false,
+        secondsVisible: false,
+      },
+      crosshair: {
+        mode: 0,
+        vertLine: {
+          color: "rgba(88, 216, 255, 0.22)",
+          width: 1,
+          style: 2,
+          labelBackgroundColor: ACCENT_GREEN,
+        },
+        horzLine: {
+          color: "rgba(88, 216, 255, 0.22)",
+          width: 1,
+          style: 2,
+          labelBackgroundColor: ACCENT_GREEN,
+        },
+      },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: false,
+      },
+      handleScale: {
+        axisPressedMouseMove: true,
+        mouseWheel: true,
+        pinch: true,
+      },
+    });
+
+    const candleSeries = addCandlestickSeries(chart, {
+      upColor: ACCENT_GREEN,
+      downColor: ACCENT_RED,
+      borderUpColor: ACCENT_GREEN,
+      borderDownColor: ACCENT_RED,
+      wickUpColor: ACCENT_GREEN,
+      wickDownColor: ACCENT_RED,
+      lastValueVisible: true,
+      priceLineVisible: true,
+      priceLineColor: ACCENT_GREEN,
+      priceFormat: {
+        type: "price",
+        precision: 2,
+        minMove: 0.01,
+      },
+    });
+
+    const volumeSeries = addHistogramSeries(chart, {
+      priceScaleId: "volume",
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceFormat: { type: "volume" },
+    });
+
+    const predictionSeries = addCandlestickSeries(chart, {
+      upColor: GHOST_UP,
+      downColor: GHOST_DOWN,
+      borderUpColor: GHOST_UP_WICK,
+      borderDownColor: GHOST_DOWN_WICK,
+      wickUpColor: GHOST_UP_WICK,
+      wickDownColor: GHOST_DOWN_WICK,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceFormat: {
+        type: "price",
+        precision: 2,
+        minMove: 0.01,
+      },
+    });
+    predictionSeries.setData([]);
+
+    chart.priceScale("volume").applyOptions({
+      scaleMargins: { top: 0.78, bottom: 0 },
+      borderVisible: false,
+    });
+
+    const onCrosshairMove = (param) => {
+      const candleData =
+        param?.seriesData?.get?.(candleSeries) ??
+        param?.seriesData?.get?.(predictionSeries) ??
+        null;
+      const volumeData = param?.seriesData?.get?.(volumeSeries) ?? null;
+      updateTooltipContent({
+        container: tooltipRef.current,
+        point: param?.point,
+        candle: candleData,
+        volume: volumeData,
+        currencySymbol,
+        timeframe: timeframeRef.current,
+      });
+    };
+
+    chart.subscribeCrosshairMove(onCrosshairMove);
+
+    if (typeof ResizeObserver === "function") {
+      resizeObserverRef.current = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        const width = Math.floor(entry.contentRect.width);
+        const height = Math.floor(entry.contentRect.height);
+        if (!width || !height) return;
+        chart.applyOptions({ width, height });
+      });
+      resizeObserverRef.current.observe(container);
+    }
+
+    chartRef.current = chart;
+    candleSeriesRef.current = candleSeries;
+    volumeSeriesRef.current = volumeSeries;
+    predictionSeriesRef.current = predictionSeries;
+
+    return () => {
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
+      chart.unsubscribeCrosshairMove(onCrosshairMove);
+      if (tooltipRef.current) tooltipRef.current.style.opacity = "0";
+      predictionSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      candleSeriesRef.current = null;
+      chartRef.current = null;
+      candlesRef.current = [];
+      lastCandleRef.current = null;
+      chart.remove();
+    };
+  }, [currencySymbol]);
+
+  useEffect(() => {
+    pendingRangeRef.current = null;
+  }, [symbol]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const preset = getTimeframePreset(timeframe);
+    chart.applyOptions({
+      timeScale: {
+        timeVisible: preset.intraday,
+        secondsVisible: false,
+        tickMarkFormatter: (time) => formatAxisTime(time, timeframeRef.current),
+      },
+      localization: {
+        timeFormatter: (time) => formatAxisTime(time, timeframeRef.current),
+      },
+    });
+  }, [timeframe]);
+
+  useEffect(() => {
+    if (!symbol || !chartRef.current || !candleSeriesRef.current || !volumeSeriesRef.current) {
+      return;
+    }
+
+    let disposed = false;
+
+    async function loadChartData() {
+      const currentRequestId = requestIdRef.current + 1;
+      requestIdRef.current = currentRequestId;
+
+      const chart = chartRef.current;
+      const candleSeries = candleSeriesRef.current;
+      const volumeSeries = volumeSeriesRef.current;
+      const predictionSeries = predictionSeriesRef.current;
+      const preset = getTimeframePreset(timeframe);
+      const preservedRange = pendingRangeRef.current ?? captureVisibleRange(chart);
+      pendingRangeRef.current = null;
+
+      setLoading(true);
+      setError("");
+      setPredictionError("");
+
+      try {
+        const marketPayload = await stockService.getTradingChart(symbol, {
+          range: preset.range,
+          interval: preset.apiInterval,
+        });
+
+        if (disposed || requestIdRef.current !== currentRequestId) {
+          return;
+        }
+
+        const candles = transformMarketDataToCandles(marketPayload, timeframe);
+        if (!candles.length) {
+          throw new Error("No chart data");
+        }
+
+        candleSeries.setData(candles);
+        volumeSeries.setData(candles.map(buildVolumePoint));
+        predictionSeries?.setData([]);
+
+        candlesRef.current = candles;
+        lastCandleRef.current = candles[candles.length - 1];
+        setLastPrice(candles[candles.length - 1].close);
+        setSessionOpenPrice(candles[0]?.open ?? null);
+        setLastCandleTime(candles[candles.length - 1]?.time ?? null);
+        setPredictionMeta(null);
+        setPredictionLoading(false);
+
+        restoreVisibleRange(chart, preservedRange);
+      } catch {
+        if (disposed || requestIdRef.current !== currentRequestId) {
+          return;
+        }
+
+        candleSeries.setData([]);
+        volumeSeries.setData([]);
+        predictionSeries?.setData([]);
+        candlesRef.current = [];
+        lastCandleRef.current = null;
+        setPredictionMeta(null);
+        setLastPrice(null);
+        setSessionOpenPrice(null);
+        setLastCandleTime(null);
+        setError(ERROR_MESSAGE);
+      } finally {
+        if (!disposed && requestIdRef.current === currentRequestId) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadChartData();
+
+    return () => {
+      disposed = true;
+    };
+  }, [symbol, timeframe, reloadKey]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    requestAnimationFrame(() => {
+      try {
+        chart.timeScale().fitContent();
+      } catch {
+        // no-op
+      }
+    });
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    if (!tick || !candleSeriesRef.current || !volumeSeriesRef.current || !candlesRef.current.length) {
+      return;
+    }
+
+    const price = Number(tick.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      return;
+    }
+
+    const now = Number(tick.time) || Math.floor(Date.now() / 1000);
+    const candleTime = getLiveCandleTime(now, timeframeRef.current);
+    if (!Number.isFinite(candleTime)) {
+      return;
+    }
+
+    const latest = lastCandleRef.current;
+    const latestTime = toComparableTime(latest?.time);
+    if (Number.isFinite(latestTime) && candleTime < latestTime) {
+      return;
+    }
+
+    const tickVolume = Number(tick.volume);
+    let nextCandle;
+
+    if (latest && latest.time === candleTime) {
+      nextCandle = {
+        ...latest,
+        high: Math.max(latest.high, price),
+        low: Math.min(latest.low, price),
+        close: price,
+        volume: Number.isFinite(tickVolume)
+          ? Math.max(latest.volume || 0, tickVolume)
+          : latest.volume || 0,
+      };
+      candlesRef.current[candlesRef.current.length - 1] = nextCandle;
+    } else {
+      const open = latest?.close ?? price;
+      nextCandle = {
+        time: candleTime,
+        open,
+        high: Math.max(open, price),
+        low: Math.min(open, price),
+        close: price,
+        volume: Number.isFinite(tickVolume) ? Math.max(0, tickVolume) : 0,
+      };
+      candlesRef.current = [...candlesRef.current, nextCandle];
+    }
+
+    lastCandleRef.current = nextCandle;
+
+    try {
+      candleSeriesRef.current.update(nextCandle);
+      volumeSeriesRef.current.update(buildVolumePoint(nextCandle));
+    } catch {
+      try {
+        candleSeriesRef.current.setData(candlesRef.current);
+        volumeSeriesRef.current.setData(candlesRef.current.map(buildVolumePoint));
+      } catch {
+        return;
+      }
+    }
+
+    setLastPrice(price);
+    setLastCandleTime(nextCandle.time);
+  }, [tick]);
+
+  const timeframeButtons = useMemo(() => Object.values(TIMEFRAME_PRESETS), []);
+  const chartHeight = isFullscreen ? "calc(100vh - 170px)" : `${CHART_HEIGHT}px`;
+  const changePercent =
+    Number.isFinite(lastPrice) && Number.isFinite(sessionOpenPrice) && sessionOpenPrice !== 0
+      ? ((lastPrice - sessionOpenPrice) / sessionOpenPrice) * 100
+      : null;
+  const changeColor = !Number.isFinite(changePercent)
+    ? "#7b8ba7"
+    : changePercent >= 0
+      ? ACCENT_GREEN
+      : ACCENT_RED;
+
+  const runPrediction = async () => {
+    if (!symbol || predictionLoading || !predictionSeriesRef.current) return;
+
+    const chart = chartRef.current;
+    const visibleRange = captureVisibleRange(chart);
+    setPredictionLoading(true);
+    setPredictionError("");
+
+    try {
+      const payload = await stockService.getChartPrediction(symbol, {
+        timeframe: predictionTimeframe,
+        steps: 4,
+      });
+      const predictionCandles = transformPredictionToCandles(payload, predictionTimeframe);
+      predictionSeriesRef.current.setData(predictionCandles);
+      setPredictionMeta(payload?.predictionMeta ?? null);
+      restoreVisibleRange(chart, visibleRange);
+    } catch {
+      predictionSeriesRef.current.setData([]);
+      setPredictionMeta(null);
+      setPredictionError(PREDICTION_ERROR_MESSAGE);
+    } finally {
+      setPredictionLoading(false);
+    }
+  };
+
+  const clearPrediction = () => {
+    predictionSeriesRef.current?.setData([]);
+    setPredictionMeta(null);
+    setPredictionError("");
+  };
+
+  const toggleFullscreen = async () => {
+    const section = sectionRef.current;
+    if (!section) return;
+
+    try {
+      if (!document.fullscreenElement) {
+        await section.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch {
+      // no-op
+    }
+  };
+
+  return (
+    <section
+      ref={sectionRef}
+      style={{
+        position: "relative",
+        overflow: "hidden",
+        border: `1px solid ${DARK_BORDER}`,
+        background: "linear-gradient(180deg, rgba(4, 10, 22, 0.98), rgba(2, 6, 16, 0.98))",
+        borderRadius: isFullscreen ? "0" : "24px",
+        padding: isFullscreen ? "20px" : "18px",
+        boxShadow: isFullscreen ? "none" : "0 28px 80px rgba(0, 0, 0, 0.42)",
+        minHeight: isFullscreen ? "100vh" : "auto",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          backgroundImage:
+            "linear-gradient(rgba(11, 21, 40, 0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(11, 21, 40, 0.35) 1px, transparent 1px)",
+          backgroundSize: "28px 28px",
+          opacity: 0.38,
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          top: "-20%",
+          left: "14%",
+          width: "46%",
+          height: "36%",
+          pointerEvents: "none",
+          background: "radial-gradient(circle, rgba(0, 212, 255, 0.11), transparent 70%)",
+          filter: "blur(42px)",
+        }}
+      />
+
+      <div
+        style={{
+          position: "relative",
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "16px",
+          flexWrap: "wrap",
+          marginBottom: "14px",
+        }}
+      >
+        <div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              marginBottom: "6px",
+              flexWrap: "wrap",
+            }}
+          >
+            <h3
+              style={{
+                margin: 0,
+                color: "#eef2ff",
+                fontSize: "18px",
+                fontWeight: 700,
+                letterSpacing: "-0.02em",
+              }}
+            >
+              {symbol} Price Action
+            </h3>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "3px 10px",
+                borderRadius: "8px",
+                background: connected ? "rgba(22, 214, 161, 0.08)" : "rgba(255, 77, 87, 0.08)",
+                border: connected
+                  ? "1px solid rgba(22, 214, 161, 0.16)"
+                  : "1px solid rgba(255, 77, 87, 0.16)",
+                color: connected ? ACCENT_GREEN : "#ff8c93",
+                fontSize: "10px",
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+              }}
+            >
+              <span
+                style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "50%",
+                  background: connected ? ACCENT_GREEN : ACCENT_RED,
+                  boxShadow: connected ? "0 0 10px rgba(22, 214, 161, 0.5)" : "none",
+                }}
+              />
+              {connected ? "live" : "delayed"}
+            </span>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              gap: "12px",
+              flexWrap: "wrap",
+              color: "#556581",
+              fontSize: "13px",
+            }}
+          >
+            <span>Last: {formatPrice(lastPrice, currencySymbol)}</span>
+            <span style={{ color: changeColor, fontWeight: 700 }}>
+              {formatSignedPercent(changePercent)}
+            </span>
+            <span>{formatInfoTime(lastCandleTime, timeframe)}</span>
+            <span>{candlesRef.current.length} pts</span>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              gap: "6px",
+              padding: "5px",
+              borderRadius: "14px",
+              background: DARK_SURFACE,
+              border: `1px solid ${DARK_BORDER}`,
+              boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.03)",
+            }}
+          >
+            {timeframeButtons.map((item) => {
+              const active = item.key === timeframe;
+              return (
+                <ToolbarButton
+                  key={item.key}
+                  active={active}
+                  onClick={() => {
+                    if (item.key === timeframe) return;
+                    pendingRangeRef.current = captureVisibleRange(chartRef.current);
+                    setTimeframe(item.key);
+                  }}
+                >
+                  {item.label}
+                </ToolbarButton>
+              );
+            })}
+          </div>
+
+          <select
+            value={predictionTimeframe}
+            onChange={(event) => setPredictionTimeframe(event.target.value)}
+            style={{
+              border: "1px solid rgba(124, 92, 255, 0.26)",
+              borderRadius: "12px",
+              padding: "10px 12px",
+              background: "rgba(24, 16, 44, 0.92)",
+              color: "#d8cdff",
+              fontSize: "12px",
+              fontWeight: 700,
+              outline: "none",
+            }}
+          >
+            {PREDICTION_TIMEFRAME_OPTIONS.map((option) => (
+              <option
+                key={option}
+                value={option}
+                style={{ background: "#140f26", color: "#d8cdff" }}
+              >
+                {option.toUpperCase()}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            onClick={runPrediction}
+            disabled={predictionLoading || loading}
+            style={{
+              border: "1px solid rgba(124, 92, 255, 0.26)",
+              borderRadius: "12px",
+              padding: "10px 14px",
+              background: predictionLoading || loading
+                ? "rgba(52, 40, 88, 0.92)"
+                : "linear-gradient(135deg, rgba(86, 64, 176, 0.98), rgba(124, 92, 255, 0.98))",
+              color: "#f7f4ff",
+              fontSize: "12px",
+              fontWeight: 700,
+              cursor: predictionLoading || loading ? "wait" : "pointer",
+              boxShadow: predictionLoading || loading
+                ? "none"
+                : "0 10px 28px rgba(124, 92, 255, 0.28)",
+            }}
+          >
+            {predictionLoading ? "Predicting..." : "Predict"}
+          </button>
+
+          <button
+            type="button"
+            onClick={clearPrediction}
+            style={{
+              border: `1px solid ${DARK_BORDER}`,
+              borderRadius: "12px",
+              padding: "10px 14px",
+              background: DARK_SURFACE,
+              color: "#7f8ba6",
+              fontSize: "12px",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Clear
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            style={{
+              border: `1px solid ${DARK_BORDER}`,
+              borderRadius: "12px",
+              padding: "10px 14px",
+              background: DARK_SURFACE,
+              color: "#dce5fa",
+              fontSize: "12px",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+          </button>
+        </div>
+      </div>
+
+      {predictionError && !error && (
+        <div
+          style={{
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            marginBottom: "12px",
+            padding: "10px 14px",
+            borderRadius: "12px",
+            border: "1px solid rgba(255, 77, 87, 0.2)",
+            background: "rgba(58, 16, 25, 0.76)",
+            color: "#ff8c93",
+            fontSize: "13px",
+          }}
+        >
+          <span
+            style={{
+              width: "12px",
+              height: "12px",
+              borderRadius: "50%",
+              border: "2px solid currentColor",
+              boxSizing: "border-box",
+            }}
+          />
+          {predictionError}
+        </div>
+      )}
+
+      {predictionMeta && !error && (
+        <div
+          style={{
+            position: "relative",
+            display: "flex",
+            gap: "18px",
+            flexWrap: "wrap",
+            marginBottom: "14px",
+            padding: "12px 14px",
+            borderRadius: "14px",
+            border: "1px solid rgba(124, 92, 255, 0.2)",
+            background: "linear-gradient(135deg, rgba(25, 17, 45, 0.88), rgba(8, 12, 24, 0.92))",
+            color: "#b7c2d8",
+            fontSize: "12px",
+          }}
+        >
+          <span>Forecast {predictionMeta.direction || "--"}</span>
+          <span>Confidence {Number(predictionMeta.confidence || 0).toFixed(1)}%</span>
+          <span>Target {formatPrice(predictionMeta.targetPrice, currencySymbol)}</span>
+          <span>Latency {Number(predictionMeta.processingTimeMs || 0).toFixed(0)}ms</span>
+        </div>
+      )}
+
+      <div
+        style={{
+          position: "relative",
+          minHeight: chartHeight,
+          borderRadius: "18px",
+          overflow: "hidden",
+          border: `1px solid ${DARK_BORDER}`,
+          background: "linear-gradient(180deg, #060c18, #050914)",
+          boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.03)",
+        }}
+      >
+        <div
+          ref={chartHostRef}
+          style={{
+            width: "100%",
+            height: chartHeight,
+          }}
+        />
+
+        <div
+          ref={tooltipRef}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            opacity: 0,
+            pointerEvents: "none",
+            minWidth: "160px",
+            padding: "10px 12px",
+            borderRadius: "12px",
+            border: "1px solid rgba(79, 102, 144, 0.3)",
+            background: "rgba(4, 10, 22, 0.96)",
+            color: "#dce5fa",
+            fontSize: "12px",
+            boxShadow: "0 18px 40px rgba(0, 0, 0, 0.42)",
+            backdropFilter: "blur(8px)",
+            transition: "opacity 120ms ease",
+          }}
+        />
+
+        {loading && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(4, 10, 22, 0.82)",
+              color: "#a6b4cf",
+              fontSize: "14px",
+              fontWeight: 600,
+            }}
+          >
+            Loading market data...
+          </div>
+        )}
+
+        {error && !loading && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "12px",
+              background: "rgba(4, 10, 22, 0.94)",
+              color: "#ff8c93",
+              fontSize: "14px",
+              fontWeight: 600,
+            }}
+          >
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => {
+                pendingRangeRef.current = null;
+                setReloadKey((current) => current + 1);
+              }}
+              style={{
+                border: "1px solid rgba(255, 77, 87, 0.18)",
+                borderRadius: "10px",
+                padding: "8px 12px",
+                background: "rgba(58, 16, 25, 0.76)",
+                color: "#ff8c93",
+                cursor: "pointer",
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+});
+
+export default TradingChart;

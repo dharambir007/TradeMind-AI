@@ -14,8 +14,8 @@ import utils
 
 logger = utils.setup_logger(__name__)
 
-PREDICTION_HORIZONS = [2, 3, 5]  # Minutes ahead to predict
-OPTUNA_TRIALS = 10  # Fast tuning (3 models to train)
+PREDICTION_HORIZONS = [3, 5, 10]  # Minutes ahead to predict
+OPTUNA_TRIALS = 10  # Fast tuning (3 timeframe-specific models to train)
 MAX_ROWS = 500000  # Use most recent N rows (recent data is most relevant)
 TRAIN_SUBSAMPLE = 200000  # Subsample for Optuna speed
 MIN_FEATURE_WINDOW = 60  # Need at least 60 rows for rolling features

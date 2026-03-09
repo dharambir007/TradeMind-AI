@@ -1,127 +1,159 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const http = require('http');
-const connectDb = require('./config/db');
-const { redis } = require('./config/redis');
-const { initSocket } = require('./sockets/marketSocket');
-const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/user');
-const marketRoutes = require('./routes/market');
-const stockRoutes = require('./routes/stocks');
-const watchlistRoutes = require('./routes/watchlist');
-const aiInsightRoutes = require('./routes/aiInsight');
-const predictionRoutes = require('./routes/prediction');
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const http = require("http");
+const connectDb = require("./config/db");
+const { initSocket } = require("./sockets/marketSocket");
+const requestLogger = require("./middlewares/requestLogger");
+const { notFoundHandler, errorHandler } = require("./middlewares/errorHandler");
+const logger = require("./utils/logger");
 
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error?.stack || error?.message || error);
-});
+const authRoutes = require("./routes/auth");
+const userRoutes = require("./routes/user");
+const marketRoutes = require("./routes/market");
+const stockRoutes = require("./routes/stocks");
+const watchlistRoutes = require("./routes/watchlist");
+const aiInsightRoutes = require("./routes/aiInsight");
+const predictionRoutes = require("./routes/prediction");
+const { getHealth } = require("./controllers/healthController");
 
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled Rejection:', reason?.message || reason);
-});
+function optionalRequire(moduleName, fallback) {
+  try {
+    return require(moduleName);
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function fallbackHelmet() {
+  return () => (req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    next();
+  };
+}
+
+function fallbackCompression() {
+  return () => (req, res, next) => next();
+}
+
+function createFallbackRateLimiter({ windowMs, max }) {
+  const hits = new Map();
+
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = req.ip || req.socket.remoteAddress || "unknown";
+    const current = hits.get(key) || { count: 0, resetAt: now + windowMs };
+
+    if (now > current.resetAt) {
+      current.count = 0;
+      current.resetAt = now + windowMs;
+    }
+
+    current.count += 1;
+    hits.set(key, current);
+
+    if (current.count > max) {
+      return res.status(429).json({
+        success: false,
+        message: "Too many requests, please try again later.",
+      });
+    }
+
+    return next();
+  };
+}
+
+const helmet = optionalRequire("helmet", fallbackHelmet());
+const compression = optionalRequire("compression", fallbackCompression());
+const expressRateLimit = optionalRequire("express-rate-limit", null);
 
 const app = express();
 const server = http.createServer(app);
-const basePort = Number(process.env.PORT) || 5000;
-const maxPortAttempts = Number(process.env.PORT_RETRY_ATTEMPTS) || 10;
+const PORT = Number(process.env.PORT) || 5000;
+
+process.on("uncaughtException", (error) => {
+  logger.error("Uncaught exception:", error?.stack || error?.message || error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  logger.error("Unhandled rejection:", reason?.stack || reason?.message || reason);
+});
+
+function getAllowedOrigins() {
+  return [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "https://trade-mind-ai-umber.vercel.app",
+    ...(process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(",") : []),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
 
 async function bootstrap() {
-  try {
-    await connectDb();
-  } catch (err) {
-    console.error('Failed to initialize MongoDB:', err?.message || err);
-    process.exit(1);
-  }
+  await connectDb();
 
-  initSocket(server);
-
+  app.set("trust proxy", 1);
+  app.use(helmet());
+  app.use(compression());
   app.use(
     cors({
-      origin: [
-        'http://localhost:5173',
-        'http://localhost:5174',
-        'http://localhost:5175',
-        'https://trade-mind-ai-umber.vercel.app',
-        process.env.CLIENT_ORIGIN,
-      ].filter(Boolean),
+      origin(origin, callback) {
+        if (!origin) return callback(null, true);
+        const allowedOrigins = getAllowedOrigins();
+        return callback(null, allowedOrigins.includes(origin));
+      },
       credentials: true,
     })
   );
-  app.use(express.json());
-  app.use((req, res, next) => {
-    console.log('API HIT:', req.originalUrl);
-    next();
+
+  const apiRateLimit = expressRateLimit
+    ? expressRateLimit({
+        windowMs: 60 * 1000,
+        max: 120,
+        standardHeaders: true,
+        legacyHeaders: false,
+      })
+    : createFallbackRateLimiter({ windowMs: 60 * 1000, max: 120 });
+
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ extended: false }));
+  app.use(requestLogger);
+  app.use("/api", apiRateLimit);
+
+  app.get("/health", getHealth);
+  app.get("/api/health", getHealth);
+
+  app.use("/api/auth", authRoutes);
+  app.use("/api/user", userRoutes);
+  app.use("/api/market", marketRoutes);
+  app.use("/api/stocks", stockRoutes);
+  app.use("/api/watchlist", watchlistRoutes);
+  app.use("/api/ai-insight", aiInsightRoutes);
+  app.use("/api/prediction", predictionRoutes);
+
+  app.get("/", (req, res) => {
+    res.json({ status: "ok", service: "TradeMind AI backend" });
   });
 
-  app.use('/api/auth', authRoutes);
-  app.use('/api/user', userRoutes);
-  app.use('/api/market', marketRoutes);
-  app.use('/api/stocks', stockRoutes);
-  app.use('/api/watchlist', watchlistRoutes);
-  app.use('/api/ai-insight', aiInsightRoutes);
-  app.use('/api/prediction', predictionRoutes);
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'running' });
+  try {
+    initSocket(server);
+  } catch (error) {
+    logger.warn("Socket initialization failed:", error.message);
+  }
+
+  server.listen(PORT, "0.0.0.0", () => {
+    logger.info(`Server listening on port ${PORT}`);
   });
-
-  app.get('/', (req, res) => {
-    res.json({ status: 'ok', websocket: 'enabled', redis: redis.status });
-  });
-
-  app.use((req, res, next) => {
-    if (req.originalUrl.startsWith('/api/')) {
-      return res.status(404).json({
-        success: false,
-        message: 'Route not found',
-      });
-    }
-    return next();
-  });
-
-  app.use((err, req, res, next) => {
-    console.error('Express error:', err?.stack || err?.message || err);
-    if (res.headersSent) return next(err);
-    return res.status(err?.status || 500).json({
-      success: false,
-      message: err?.message || 'Internal server error',
-    });
-  });
-
-  startServer(basePort, maxPortAttempts - 1);
 }
 
-function startServer(port, remainingRetries) {
-  const onListening = () => {
-    server.off('error', onError);
-    const activePort = server.address()?.port || port;
-    console.log(`Server is running at http://localhost:${activePort}`);
-    console.log('WebSocket server is ready for connections');
-  };
-
-  const onError = (err) => {
-    server.off('listening', onListening);
-
-    if (err?.code === 'EADDRINUSE' && remainingRetries > 0) {
-      const nextPort = port + 1;
-      console.warn(`Port ${port} is in use. Retrying on ${nextPort}...`);
-
-      if (server.listening) {
-        server.close(() => startServer(nextPort, remainingRetries - 1));
-      } else {
-        startServer(nextPort, remainingRetries - 1);
-      }
-      return;
-    }
-
-    console.error('Failed to start server:', err?.message || err);
-    process.exit(1);
-  };
-
-  server.once('listening', onListening);
-  server.once('error', onError);
-  server.listen(port, '0.0.0.0');
-}
-
-bootstrap();
+bootstrap().catch((error) => {
+  logger.error("Bootstrap failed:", error?.stack || error?.message || error);
+  process.exit(1);
+});

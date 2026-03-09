@@ -26,8 +26,22 @@ from predict_api import engineer_features_from_candles
 
 logger = utils.setup_logger("ml_fastapi")
 
-pipeline = None
-feature_list = None
+TIMEFRAME_MODEL_FILES = {
+    "3m": "model_3min.pkl",
+    "5m": "model_5min.pkl",
+    "10m": "model_10min.pkl",
+}
+TIMEFRAME_FEATURE_FILES = {
+    "3m": "features_3min.txt",
+    "5m": "features_5min.txt",
+    "10m": "features_10min.txt",
+}
+FALLBACK_TIMEFRAME = "5m"
+LEGACY_MODEL_FILE = "model_2min.pkl"
+LEGACY_FEATURE_FILE = "features_2min.txt"
+
+pipelines: Dict[str, Any] = {}
+feature_lists: Dict[str, List[str]] = {}
 
 
 class Candle(BaseModel):
@@ -50,28 +64,57 @@ class PredictionResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pipeline, feature_list
+    global pipelines, feature_lists
     logger.info("Loading model...")
     try:
-        minute_model_path = config.OUTPUT_DIR / "model_2min.pkl"
-        feature_list_path = config.OUTPUT_DIR / "features_2min.txt"
+        pipelines = {}
+        feature_lists = {}
 
-        if minute_model_path.exists():
-            pipeline = joblib.load(minute_model_path)
-            logger.info(f"Loaded minute model from {minute_model_path}")
-        elif config.MODEL_PATH.exists():
-            pipeline = joblib.load(config.MODEL_PATH)
-            logger.warning(f"Minute model not found, fell back to daily model: {config.MODEL_PATH}")
-        else:
-            raise RuntimeError("No model file found")
+        for timeframe, model_file in TIMEFRAME_MODEL_FILES.items():
+            model_path = config.OUTPUT_DIR / model_file
+            feature_path = config.OUTPUT_DIR / TIMEFRAME_FEATURE_FILES[timeframe]
 
-        if feature_list_path.exists():
-            feature_list = feature_list_path.read_text().strip().split('\n')
-            feature_list = [f.strip() for f in feature_list if f.strip()]
-            logger.info(f"Loaded feature list ({len(feature_list)} features)")
-        else:
-            feature_list = None
-            logger.warning("Feature list file not found, will rely on model metadata")
+            if not model_path.exists():
+                logger.warning("Model file missing for %s: %s", timeframe, model_path)
+                continue
+
+            pipelines[timeframe] = joblib.load(model_path)
+            logger.info("Loaded %s model from %s", timeframe, model_path)
+
+            if feature_path.exists():
+                features = feature_path.read_text().strip().split('\n')
+                feature_lists[timeframe] = [f.strip() for f in features if f.strip()]
+                logger.info(
+                    "Loaded %s feature list (%s features)",
+                    timeframe,
+                    len(feature_lists[timeframe]),
+                )
+            else:
+                logger.warning("Feature list missing for %s: %s", timeframe, feature_path)
+
+        if not pipelines:
+            legacy_model_path = config.OUTPUT_DIR / LEGACY_MODEL_FILE
+            legacy_feature_path = config.OUTPUT_DIR / LEGACY_FEATURE_FILE
+
+            if legacy_model_path.exists():
+                pipelines[FALLBACK_TIMEFRAME] = joblib.load(legacy_model_path)
+                logger.warning(
+                    "No timeframe-specific minute models found; using legacy fallback %s for %s",
+                    legacy_model_path,
+                    FALLBACK_TIMEFRAME,
+                )
+                if legacy_feature_path.exists():
+                    features = legacy_feature_path.read_text().strip().split('\n')
+                    feature_lists[FALLBACK_TIMEFRAME] = [f.strip() for f in features if f.strip()]
+            elif config.MODEL_PATH.exists():
+                pipelines[FALLBACK_TIMEFRAME] = joblib.load(config.MODEL_PATH)
+                logger.warning(
+                    "Minute models not found, fell back to daily model %s for %s",
+                    config.MODEL_PATH,
+                    FALLBACK_TIMEFRAME,
+                )
+            else:
+                raise RuntimeError("No model file found")
 
         logger.info("Warming up model...")
         warmup_data = pd.DataFrame([{
@@ -80,8 +123,9 @@ async def lifespan(app: FastAPI):
         }] * 60)
 
         try:
-            _ = _predict_logic(warmup_data, 5)
-            logger.info("Model warm-up complete.")
+            for timeframe in pipelines.keys():
+                _ = _predict_logic(warmup_data, 5, timeframe=timeframe)
+            logger.info("Model warm-up complete for %s", ", ".join(sorted(pipelines.keys())))
         except Exception as e:
             logger.warning(f"Warm-up failed (non-critical): {e}")
 
@@ -91,8 +135,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    pipeline = None
-    feature_list = None
+    pipelines = {}
+    feature_lists = {}
 
 app = FastAPI(lifespan=lifespan)
 
@@ -106,7 +150,12 @@ app.add_middleware(
 )
 
 
-def _align_features(row: pd.DataFrame, df: pd.DataFrame = None) -> pd.DataFrame:
+def _align_features(
+    row: pd.DataFrame,
+    model: Any,
+    expected_features: Optional[List[str]] = None,
+    df: pd.DataFrame = None,
+) -> pd.DataFrame:
     """Align features to match model expectations."""
     rename_map = {}
     if 'ma_10' in row.columns and 'MA_10' not in row.columns:
@@ -136,19 +185,70 @@ def _align_features(row: pd.DataFrame, df: pd.DataFrame = None) -> pd.DataFrame:
         else:
             row['bb_middle'] = row['close'].values[0] if len(row) > 0 else 0
 
-    if feature_list:
-        for feat in feature_list:
+    if expected_features:
+        for feat in expected_features:
             if feat not in row.columns:
                 row[feat] = 0.0
-        row = row[feature_list]
-    elif hasattr(pipeline, 'feature_names_in_'):
-        expected = list(pipeline.feature_names_in_)
+        row = row[expected_features]
+    elif hasattr(model, 'feature_names_in_'):
+        expected = list(model.feature_names_in_)
         for feat in expected:
             if feat not in row.columns:
                 row[feat] = 0.0
         row = row[expected]
 
     return row
+
+
+def _resolve_timeframe_key(
+    timeframe: Optional[str] = None,
+    horizon: Optional[int] = None,
+    interval_seconds: Optional[int] = None,
+) -> str:
+    candidates = []
+
+    tf = str(timeframe or "").strip().lower()
+    if tf in pipelines:
+        candidates.append(tf)
+
+    if isinstance(horizon, int) and horizon > 0:
+        horizon_key = f"{horizon}m"
+        if horizon_key in pipelines:
+            candidates.append(horizon_key)
+
+    interval_map = {
+        180: "3m",
+        300: "5m",
+        600: "10m",
+    }
+    mapped_interval = interval_map.get(int(interval_seconds)) if interval_seconds else None
+    if mapped_interval in pipelines:
+        candidates.append(mapped_interval)
+
+    for candidate in candidates:
+        if candidate in pipelines:
+            return candidate
+
+    if FALLBACK_TIMEFRAME in pipelines:
+        return FALLBACK_TIMEFRAME
+
+    if pipelines:
+        return next(iter(sorted(pipelines.keys())))
+
+    raise RuntimeError("No prediction models loaded")
+
+
+def _get_model_bundle(
+    timeframe: Optional[str] = None,
+    horizon: Optional[int] = None,
+    interval_seconds: Optional[int] = None,
+) -> Tuple[str, Any, Optional[List[str]]]:
+    timeframe_key = _resolve_timeframe_key(
+        timeframe=timeframe,
+        horizon=horizon,
+        interval_seconds=interval_seconds,
+    )
+    return timeframe_key, pipelines[timeframe_key], feature_lists.get(timeframe_key)
 
 
 def _compute_confidence(pred_return: float, df: pd.DataFrame) -> float:
@@ -174,28 +274,42 @@ def _clamp_return(pred_return: float, max_pct: float = 0.005) -> float:
     return float(np.clip(pred_return, -max_pct, max_pct))
 
 
-def _predict_logic(df: pd.DataFrame, horizon: int):
+def _predict_logic(
+    df: pd.DataFrame,
+    horizon: int,
+    timeframe: Optional[str] = None,
+    interval_seconds: Optional[int] = None,
+):
     X = engineer_features_from_candles(df)
 
     if X.empty:
         raise ValueError("Insufficient data for feature engineering")
 
+    timeframe_key, model, expected_features = _get_model_bundle(
+        timeframe=timeframe,
+        horizon=horizon,
+        interval_seconds=interval_seconds,
+    )
     latest_X = X.iloc[[-1]].copy()
+    latest_X = _align_features(latest_X, model, expected_features, df)
 
-    latest_X = _align_features(latest_X, df)
-
-    pred = pipeline.predict(latest_X)[0]
+    pred = model.predict(latest_X)[0]
+    logger.info("Using model timeframe %s for horizon=%s interval=%s", timeframe_key, horizon, interval_seconds)
     return _clamp_return(float(pred))
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "model_loaded": pipeline is not None}
+    return {
+        "status": "ok",
+        "model_loaded": bool(pipelines),
+        "loaded_models": sorted(pipelines.keys()),
+    }
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_endpoint(request: PredictionRequest):
     start_time = time.perf_counter()
 
-    if pipeline is None:
+    if not pipelines:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
@@ -610,7 +724,7 @@ def _build_structured_ohlc_path(
 async def predict_candles_endpoint(request: PredictionCandlesRequest):
     start_time = time.perf_counter()
 
-    if pipeline is None:
+    if not pipelines:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     steps = max(1, min(int(request.steps), 30))
@@ -643,7 +757,12 @@ async def predict_candles_endpoint(request: PredictionCandlesRequest):
         current_price = float(df["close"].iloc[-1])
         market_state = _compute_market_state(df)
 
-        model_return = _predict_logic(df, steps)
+        model_return = _predict_logic(
+            df,
+            steps,
+            timeframe=request.timeframe,
+            interval_seconds=interval_seconds,
+        )
         trend_bias = _resolve_trend_bias(model_return, market_state)
         base_confidence = _normalize_confidence_percent(_compute_confidence(model_return, df))
 

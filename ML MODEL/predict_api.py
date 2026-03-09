@@ -19,7 +19,7 @@ FEATURE_LISTS = {}
 
 def load_all_models():
     """Load all available minute-level models."""
-    for h in [2, 3, 5]:
+    for h in [3, 5, 10]:
         model_path = config.OUTPUT_DIR / f"model_{h}min.pkl"
         feature_path = config.OUTPUT_DIR / f"features_{h}min.txt"
 
@@ -215,7 +215,7 @@ def standalone_test():
     if 'volume' not in df.columns:
         df['volume'] = ((df['high'] - df['low']) * 1000).clip(lower=1).astype(int)
 
-    for horizon in [2, 3, 5]:
+    for horizon in [3, 5, 10]:
         if horizon in MODELS:
             result = predict(df, horizon=horizon)
             logger.info(f"\n{horizon}-MIN PREDICTION:")

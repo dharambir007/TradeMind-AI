@@ -12,6 +12,7 @@ export async function fetchAIInsight(symbol, options = {}) {
 
     const response = await apiClient.post("/ai-insight", payload, {
         signal: options.signal,
+        retry: true,
     });
 
     return response.data;
@@ -20,4 +21,3 @@ export async function fetchAIInsight(symbol, options = {}) {
 export default {
     fetchAIInsight,
 };
-

@@ -270,14 +270,6 @@ function normalizeChartCandles(candles) {
     });
 }
 
-function toVolumeSeries(candles) {
-  return candles.map((c) => ({
-    time: c.time,
-    value: c.volume || 0,
-    color: c.close >= c.open ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
-  }));
-}
-
 function formatChartTime(value, intraday) {
   const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
   if (!Number.isFinite(date.getTime())) return "";
@@ -1022,15 +1014,6 @@ const CandleChart = memo(({ symbol, currency }) => {
       timeframe: prediction.timeframe,
     };
   })() : null;
-
-  // Button style helpers
-  const btnStyle = (isActive) => ({
-    padding: "4px 10px", borderRadius: "6px", fontSize: "11px",
-    fontWeight: isActive ? 600 : 400, border: "none", cursor: "pointer",
-    background: isActive ? "rgba(0,212,255,0.08)" : "transparent",
-    color: isActive ? "#00d4ff" : "#505872",
-    transition: "all 0.2s ease",
-  });
 
   const rangeBtnStyle = (isActive) => ({
     padding: "3px 8px", borderRadius: "5px", fontSize: "10px",
