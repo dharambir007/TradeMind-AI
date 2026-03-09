@@ -22,9 +22,19 @@ const apiClient = axios.create({
   },
 });
 
+function shouldAttachAuth(config) {
+  const url = String(config?.url || "");
+  if (!url) return false;
+
+  return (
+    url.startsWith("/user") ||
+    url.startsWith("/watchlist")
+  );
+}
+
 apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem("token");
-  if (token) {
+  if (token && shouldAttachAuth(config)) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   config.__retryCount = config.__retryCount || 0;

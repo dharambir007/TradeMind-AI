@@ -93,18 +93,50 @@ function getAllowedOrigins() {
     .filter(Boolean);
 }
 
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+
+  const normalizedOrigin = String(origin || "").trim();
+  if (!normalizedOrigin) return true;
+
+  if (getAllowedOrigins().includes(normalizedOrigin)) {
+    return true;
+  }
+
+  return /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(normalizedOrigin);
+}
+
 async function bootstrap() {
   await connectDb();
 
   app.set("trust proxy", 1);
   app.use(helmet());
   app.use(compression());
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (isAllowedOrigin(origin)) {
+      if (origin) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+      }
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+      );
+    }
+
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+
+    return next();
+  });
   app.use(
     cors({
       origin(origin, callback) {
-        if (!origin) return callback(null, true);
-        const allowedOrigins = getAllowedOrigins();
-        return callback(null, allowedOrigins.includes(origin));
+        return callback(null, isAllowedOrigin(origin));
       },
       credentials: true,
     })
