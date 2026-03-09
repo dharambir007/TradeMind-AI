@@ -4,6 +4,7 @@ const { normalizeSymbol, stripExchangeSuffix } = require("../utils/symbolNormali
 const { createHttpClient, withRetry } = require("../utils/httpClient");
 const AppError = require("../utils/appError");
 const CacheService = require("./cacheService");
+const logger = require("../utils/logger");
 
 const yahooSearch = new YahooFinance();
 const yahooClient = createHttpClient({
@@ -144,48 +145,98 @@ function filterToCurrentOrLastTradingSession(candles) {
   return selected.map((item) => item.candle).sort((a, b) => a.time - b.time);
 }
 
+function buildChartResponse(symbol, result, candles) {
+  const filteredCandles = INTRADAY_INTERVALS.has(String(result?.meta?.dataGranularity || "").toLowerCase())
+    ? filterToCurrentOrLastTradingSession(candles)
+    : candles;
+  const finalCandles = filteredCandles.length ? filteredCandles : candles;
+
+  return {
+    symbol,
+    meta: result.meta || {},
+    timestamps: finalCandles.map((item) => item.time),
+    prices: finalCandles.map((item) => round2(item.close)),
+    candles: finalCandles.map((item) => ({
+      time: item.time,
+      open: round2(item.open),
+      high: round2(item.high),
+      low: round2(item.low),
+      close: round2(item.close),
+      volume: Number(item.volume) || 0,
+    })),
+  };
+}
+
+async function fetchChartViaDirectUrl(symbol, { range, interval }) {
+  const response = await withRetry(
+    () =>
+      yahooClient.get(`/${encodeURIComponent(symbol)}`, {
+        params: {
+          range,
+          interval,
+          includePrePost: false,
+          events: "div,splits",
+        },
+      }),
+    { retries: 3, delayMs: 350 }
+  );
+
+  return validateChartPayload(response.data);
+}
+
+async function fetchChartViaYahooFinance(symbol, { range, interval }) {
+  return yahooSearch.chart(
+    symbol,
+    {
+      range,
+      interval,
+      includePrePost: false,
+      events: "div|split|earn",
+      return: "object",
+    },
+    {
+      validateResult: true,
+    }
+  );
+}
+
 class MarketDataService {
   static async fetchChart(symbolInput, { range = "1d", interval = "5m" } = {}) {
     const symbol = normalizeSymbol(symbolInput);
     const cacheKey = `market:chart:${symbol}:${range}:${interval}`;
 
     return CacheService.remember(cacheKey, 60, async () => {
-      const response = await withRetry(
-        () =>
-          yahooClient.get(`/${encodeURIComponent(symbol)}`, {
-            params: {
-              range,
-              interval,
-              includePrePost: false,
-              events: "div,splits",
-            },
-          }),
-        { retries: 3, delayMs: 350 }
-      );
+      let result;
+      let source = "direct";
 
-      const result = validateChartPayload(response.data);
+      try {
+        result = await fetchChartViaDirectUrl(symbol, { range, interval });
+      } catch (error) {
+        logger.warn(
+          `Direct Yahoo chart fetch failed for ${symbol} range=${range} interval=${interval}: ${
+            error?.message || error
+          }`
+        );
+        try {
+          result = await fetchChartViaYahooFinance(symbol, { range, interval });
+          source = "yahoo-finance2";
+        } catch (fallbackError) {
+          logger.error(
+            `Yahoo chart fallback failed for ${symbol} range=${range} interval=${interval}: ${
+              fallbackError?.message || fallbackError
+            }`
+          );
+          throw new AppError("Market data unavailable", 503);
+        }
+      }
+
       const candles = buildCandlesFromResult(result);
       if (!candles.length) {
+        logger.warn(`Yahoo chart returned no candles for ${symbol} via ${source}`);
         throw new AppError("Market data unavailable", 503);
       }
 
-      const filteredCandles = INTRADAY_INTERVALS.has(interval) ? filterToCurrentOrLastTradingSession(candles) : candles;
-      const finalCandles = filteredCandles.length ? filteredCandles : candles;
-
-      return {
-        symbol,
-        meta: result.meta || {},
-        timestamps: finalCandles.map((item) => item.time),
-        prices: finalCandles.map((item) => round2(item.close)),
-        candles: finalCandles.map((item) => ({
-          time: item.time,
-          open: round2(item.open),
-          high: round2(item.high),
-          low: round2(item.low),
-          close: round2(item.close),
-          volume: Number(item.volume) || 0,
-        })),
-      };
+      return buildChartResponse(symbol, result, candles);
     });
   }
 
@@ -229,7 +280,8 @@ class MarketDataService {
           prices: chart.prices,
         },
       };
-    } catch (_) {
+    } catch (error) {
+      logger.warn(`getStock failed for ${symbol}: ${error?.message || error}`);
       return {
         success: false,
         symbol,
