@@ -19,9 +19,35 @@ const getStock = asyncHandler(async (req, res) => {
     throw new AppError("symbol is required", 400);
   }
 
-  const data = await MarketDataService.getStock(symbol);
-  const statusCode = data.success === false ? 503 : 200;
-  return res.status(statusCode).json(data);
+  let data;
+  try {
+    data = await MarketDataService.getStock(symbol);
+  } catch (err) {
+    // Do not hardcode prices; signal failure and let the frontend render
+    // its own mock / sample state.
+    return res.status(200).json({
+      success: false,
+      symbol,
+      message: "Market data unavailable",
+      history: [],
+      ohlc: [],
+      timestamps: [],
+      prices: [],
+      chart: {
+        symbol,
+        timestamps: [],
+        prices: [],
+      },
+    });
+  }
+
+  // Always respond 200 and use the `success` flag so the frontend can decide
+  // how to render (real vs mock), instead of surfacing 503s from Render.
+  if (data && data.success === false) {
+    return res.status(200).json(data);
+  }
+
+  return res.status(200).json(data);
 });
 
 const getStockHistory = asyncHandler(async (req, res) => {
@@ -41,6 +67,8 @@ const getStockHistory = asyncHandler(async (req, res) => {
     const candles = await MarketDataService.getHistory(symbol, { range, interval });
     return res.json(candles);
   } catch (_) {
+    // No hardcoded OHLC; empty array tells the chart to show its own
+    // "data unavailable" state instead of failing.
     return res.json([]);
   }
 });

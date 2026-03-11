@@ -20,6 +20,7 @@ const INTRADAY_INTERVALS = new Set(["1m", "2m", "5m", "10m", "15m", "30m", "1h",
 const MARKET_TIME_ZONE = "Asia/Kolkata";
 const MARKET_OPEN_MINUTE = 9 * 60 + 15;
 const MARKET_CLOSE_MINUTE = 15 * 60 + 30;
+const inFlightChartRequests = new Map();
 
 function round2(value) {
   return Number(Number(value || 0).toFixed(2));
@@ -45,6 +46,66 @@ function validateChartPayload(payload) {
   }
 
   return result;
+}
+
+function isRateLimitError(error) {
+  const status = Number(error?.response?.status);
+  return status === 429;
+}
+
+function isYahooValidationError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("invalid options") || message.includes("missing required properties");
+}
+
+function toUnixSeconds(date) {
+  return Math.floor(date.getTime() / 1000);
+}
+
+function getRangeWindow(range) {
+  const now = new Date();
+  const period2 = toUnixSeconds(now);
+  const start = new Date(now);
+
+  switch (String(range || "").toLowerCase()) {
+    case "1d":
+      start.setDate(start.getDate() - 1);
+      break;
+    case "5d":
+      start.setDate(start.getDate() - 5);
+      break;
+    case "1mo":
+      start.setMonth(start.getMonth() - 1);
+      break;
+    case "3mo":
+      start.setMonth(start.getMonth() - 3);
+      break;
+    case "6mo":
+      start.setMonth(start.getMonth() - 6);
+      break;
+    case "1y":
+      start.setFullYear(start.getFullYear() - 1);
+      break;
+    case "5y":
+      start.setFullYear(start.getFullYear() - 5);
+      break;
+    default:
+      start.setDate(start.getDate() - 1);
+      break;
+  }
+
+  return {
+    period1: toUnixSeconds(start),
+    period2,
+  };
+}
+
+function getChartCacheTtlSeconds(interval) {
+  return INTRADAY_INTERVALS.has(String(interval || "").toLowerCase()) ? 20 : 120;
+}
+
+function getChartStaleTtlSeconds(interval) {
+  return INTRADAY_INTERVALS.has(String(interval || "").toLowerCase()) ? 180 : 900;
 }
 
 function buildCandlesFromResult(result) {
@@ -178,34 +239,92 @@ async function fetchChartViaDirectUrl(symbol, { range, interval }) {
           events: "div,splits",
         },
       }),
-    { retries: 3, delayMs: 350 }
+    {
+      retries: 4,
+      delayMs: 500,
+      shouldRetry(error, attempt) {
+        if (isRateLimitError(error)) {
+          const retryAfterSeconds = Number(error?.response?.headers?.["retry-after"] || 0);
+          // Respect upstream backoff hints when Yahoo rate-limits requests.
+          return retryAfterSeconds >= 0 && attempt < 4;
+        }
+        return true;
+      },
+    }
   );
 
   return validateChartPayload(response.data);
 }
 
 async function fetchChartViaYahooFinance(symbol, { range, interval }) {
-  return yahooSearch.chart(
-    symbol,
-    {
-      range,
-      interval,
-      includePrePost: false,
-      events: "div|split|earn",
-      return: "object",
-    },
-    {
-      validateResult: true,
+  const { period1, period2 } = getRangeWindow(range);
+  const modernOptions = {
+    period1,
+    period2,
+    interval,
+    includePrePost: false,
+    events: "div|split|earn",
+    return: "object",
+  };
+
+  try {
+    return await yahooSearch.chart(symbol, modernOptions, { validateResult: true });
+  } catch (error) {
+    if (!isYahooValidationError(error)) {
+      throw error;
     }
-  );
+
+    // Compatibility fallback for environments pinned to older chart option schemas.
+    return yahooSearch.chart(
+      symbol,
+      {
+        range,
+        interval,
+        includePrePost: false,
+        events: "div|split|earn",
+        return: "object",
+      },
+      {
+        validateResult: true,
+      }
+    );
+  }
+}
+
+function withInFlightChartRequest(cacheKey, loader) {
+  if (inFlightChartRequests.has(cacheKey)) {
+    return inFlightChartRequests.get(cacheKey);
+  }
+
+  const promise = Promise.resolve()
+    .then(loader)
+    .finally(() => {
+      inFlightChartRequests.delete(cacheKey);
+    });
+
+  inFlightChartRequests.set(cacheKey, promise);
+  return promise;
 }
 
 class MarketDataService {
   static async fetchChart(symbolInput, { range = "1d", interval = "5m" } = {}) {
     const symbol = normalizeSymbol(symbolInput);
     const cacheKey = `market:chart:${symbol}:${range}:${interval}`;
+    const staleCacheKey = `${cacheKey}:stale`;
+    const chartTtl = getChartCacheTtlSeconds(interval);
+    const staleTtl = getChartStaleTtlSeconds(interval);
 
-    return CacheService.remember(cacheKey, 60, async () => {
+    const cached = await CacheService.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    return withInFlightChartRequest(cacheKey, async () => {
+      const secondReadCache = await CacheService.get(cacheKey);
+      if (secondReadCache) {
+        return secondReadCache;
+      }
+
       let result;
       let source = "direct";
 
@@ -226,6 +345,15 @@ class MarketDataService {
               fallbackError?.message || fallbackError
             }`
           );
+          const stale = await CacheService.get(staleCacheKey);
+          if (stale) {
+            logger.warn(`Using stale chart cache for ${symbol} after upstream failure`);
+            return {
+              ...stale,
+              stale: true,
+            };
+          }
+
           throw new AppError("Market data unavailable", 503);
         }
       }
@@ -233,10 +361,24 @@ class MarketDataService {
       const candles = buildCandlesFromResult(result);
       if (!candles.length) {
         logger.warn(`Yahoo chart returned no candles for ${symbol} via ${source}`);
+        const stale = await CacheService.get(staleCacheKey);
+        if (stale) {
+          logger.warn(`Using stale chart cache for ${symbol} because fresh candles are empty`);
+          return {
+            ...stale,
+            stale: true,
+          };
+        }
+
         throw new AppError("Market data unavailable", 503);
       }
 
-      return buildChartResponse(symbol, result, candles);
+      const payload = buildChartResponse(symbol, result, candles);
+      await Promise.all([
+        CacheService.set(cacheKey, payload, chartTtl),
+        CacheService.set(staleCacheKey, payload, staleTtl),
+      ]);
+      return payload;
     });
   }
 
@@ -290,6 +432,11 @@ class MarketDataService {
         ohlc: [],
         timestamps: [],
         prices: [],
+        chart: {
+          symbol,
+          timestamps: [],
+          prices: [],
+        },
       };
     }
   }
