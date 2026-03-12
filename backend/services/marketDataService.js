@@ -8,11 +8,14 @@ const logger = require("../utils/logger");
 
 const yahooSearch = new YahooFinance();
 const yahooClient = createHttpClient({
-  baseURL: "https://query1.finance.yahoo.com/v8/finance/chart",
-  timeout: Number(process.env.YAHOO_TIMEOUT_MS) || 7000,
+  baseURL: "https://query2.finance.yahoo.com/v8/finance/chart",
+  timeout: Number(process.env.YAHOO_TIMEOUT_MS) || 10000,
   headers: {
-    "User-Agent": "TradeMindAI/1.0",
-    Accept: "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
   },
 });
 
@@ -37,6 +40,11 @@ function formatLargeNumber(value) {
 }
 
 function validateChartPayload(payload) {
+  // Render IP block returning an HTML page instead of JSON
+  if (typeof payload === 'string' && payload.toLowerCase().includes('html')) {
+     throw new AppError("Yahoo Finance IP Blocked (Render)", 503);
+  }
+
   const result = payload?.chart?.result?.[0];
   const timestamps = result?.timestamp;
   const quote = result?.indicators?.quote?.[0];
@@ -53,10 +61,6 @@ function isRateLimitError(error) {
   return status === 429;
 }
 
-function isYahooValidationError(error) {
-  const message = String(error?.message || "").toLowerCase();
-  return message.includes("invalid options") || message.includes("missing required properties");
-}
 
 function toUnixSeconds(date) {
   return Math.floor(date.getTime() / 1000);
@@ -268,26 +272,9 @@ async function fetchChartViaYahooFinance(symbol, { range, interval }) {
   };
 
   try {
-    return await yahooSearch.chart(symbol, modernOptions, { validateResult: true });
+    return await yahooSearch.chart(symbol, modernOptions, { validateResult: false });
   } catch (error) {
-    if (!isYahooValidationError(error)) {
-      throw error;
-    }
-
-    // Compatibility fallback for environments pinned to older chart option schemas.
-    return yahooSearch.chart(
-      symbol,
-      {
-        range,
-        interval,
-        includePrePost: false,
-        events: "div|split|earn",
-        return: "object",
-      },
-      {
-        validateResult: true,
-      }
-    );
+    throw error;
   }
 }
 
