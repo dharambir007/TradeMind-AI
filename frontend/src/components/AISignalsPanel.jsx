@@ -33,6 +33,9 @@ const AISignalsPanel = memo(({ symbol }) => {
                     { signal: controller.signal }
                 );
                 if (active) {
+                    if (res.data && res.data.success === false) {
+                        throw new Error(res.data.message || "Prediction unavailable");
+                    }
                     setPrediction(res.data);
                     setLoading(false);
                 }

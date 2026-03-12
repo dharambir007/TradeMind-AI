@@ -586,6 +586,11 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
         timeframe: predictionTimeframe,
         steps: 4,
       });
+
+      if (payload && payload.success === false) {
+        throw new Error(payload.message || "Prediction unavailable");
+      }
+
       const predictionCandles = transformPredictionToCandles(payload, predictionTimeframe);
       predictionSeriesRef.current.setData(predictionCandles);
       setPredictionMeta(payload?.predictionMeta ?? null);
