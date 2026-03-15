@@ -1,4 +1,5 @@
 const Redis = require("ioredis");
+const logger = require("../utils/logger");
 
 const redisUrl = process.env.REDIS_URL || "";
 const useTls =
@@ -24,15 +25,15 @@ const redis = new Redis(connectionOptions, {
 });
 
 redis.on("connect", () => {
-  console.log("[redis] connected");
+  logger.info("[redis] connected");
 });
 
 redis.on("ready", () => {
-  console.log("[redis] ready");
+  logger.info("[redis] ready");
 });
 
 redis.on("error", (error) => {
-  console.error("[redis] error:", error.message);
+  logger.error("[redis] error:", error.message);
 });
 
 const cache = {
@@ -46,10 +47,18 @@ const cache = {
   async del(key) {
     await redis.del(key);
   },
+  // Uses SCAN cursor instead of KEYS to avoid blocking the Redis event loop
   async delByPattern(pattern) {
-    const keys = await redis.keys(pattern);
-    if (keys.length) {
-      await redis.del(...keys);
+    let cursor = "0";
+    const keysToDelete = [];
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, "MATCH", pattern, "COUNT", 100);
+      cursor = nextCursor;
+      keysToDelete.push(...keys);
+    } while (cursor !== "0");
+
+    if (keysToDelete.length) {
+      await redis.del(...keysToDelete);
     }
   },
   async exists(key) {

@@ -1,5 +1,6 @@
 const axios = require('axios');
 const http = require('http');
+const logger = require('../utils/logger');
 
 const agent = new http.Agent({
     keepAlive: true,
@@ -10,7 +11,7 @@ const agent = new http.Agent({
 
 const mlClient = axios.create({
     baseURL: process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000',
-    timeout: 15000,
+    timeout: Number(process.env.ML_TIMEOUT_MS) || 15000,
     httpAgent: agent,
     headers: {
         'Content-Type': 'application/json',
@@ -28,20 +29,20 @@ const getPrediction = async (candles, horizon = 5) => {
 
         const end = performance.now();
         if (end - start > 50) {
-            console.warn(`Slow ML response: ${(end - start).toFixed(2)}ms`);
+            logger.warn(`[ML] Slow response: ${(end - start).toFixed(2)}ms`);
         }
 
         return response.data;
     } catch (error) {
         if (error.code === 'ECONNABORTED') {
-            console.error('ML Service timeout');
+            logger.error('[ML] Service timeout');
             throw new Error('ML Service timed out');
         }
         if (error.response) {
-            console.error(`ML Service Error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+            logger.error(`[ML] Service error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
             throw new Error(error.response.data.detail || 'ML Service error');
         }
-        console.error('ML Service connection failed:', error.message);
+        logger.error('[ML] Service connection failed:', error.message);
         throw new Error('ML Service unavailable');
     }
 };
@@ -76,20 +77,20 @@ const getPredictionCandles = async (candles, steps = 3, options = {}) => {
 
         const end = performance.now();
         if (end - start > 100) {
-            console.warn(`Slow ML candle prediction: ${(end - start).toFixed(2)}ms`);
+            logger.warn(`[ML] Slow candle prediction: ${(end - start).toFixed(2)}ms`);
         }
 
         return response.data;
     } catch (error) {
         if (error.code === 'ECONNABORTED') {
-            console.error('ML Service timeout (predict-candles)');
+            logger.error('[ML] Service timeout (predict-candles)');
             throw new Error('ML Service timed out');
         }
         if (error.response) {
-            console.error(`ML Service Error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+            logger.error(`[ML] Service error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
             throw new Error(error.response.data.detail || 'ML Service error');
         }
-        console.error('ML Service connection failed:', error.message);
+        logger.error('[ML] Service connection failed:', error.message);
         throw new Error('ML Service unavailable');
     }
 };

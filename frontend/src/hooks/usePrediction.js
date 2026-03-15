@@ -29,7 +29,6 @@ export function usePrediction(symbol) {
                 },
                 {
                     signal: controller.signal,
-                    retry: true,
                 }
             );
             setPrediction(res.data);

@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import authService from '../services/authService';
 
 const LoginPage = () => {
   const navigate = useNavigate();
@@ -22,26 +23,12 @@ const LoginPage = () => {
     setLoading(true);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || '/api'}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        const message = data?.message || 'Login failed. Check your credentials and try again.';
-        throw new Error(message);
-      }
-
-      if (data?.token) {
-        localStorage.setItem('token', data.token);
-      }
+      await authService.login(form.email, form.password);
 
       navigate('/dashboard', { replace: true });
     } catch (err) {
-      setError(err.message || 'Login failed. Please try again.');
+      const message = err?.response?.data?.message || err?.message || 'Login failed. Please try again.';
+      setError(message);
     } finally {
       setLoading(false);
     }

@@ -40,12 +40,13 @@ function getSocket() {
             console.debug("[useSocket] connecting to", SOCKET_URL);
         }
         sharedSocket = io(SOCKET_URL, {
-            transports: ["websocket", "polling"],
+            transports: ["polling", "websocket"],
+            upgrade: true,
             reconnection: true,
             reconnectionAttempts: Infinity,
-            reconnectionDelay: 1000,
-            reconnectionDelayMax: 5000,
-            timeout: 10000,
+            reconnectionDelay: 2000,
+            reconnectionDelayMax: 10000,
+            timeout: 20000,
         });
     }
     refCount++;

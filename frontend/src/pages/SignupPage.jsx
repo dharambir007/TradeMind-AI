@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import authService from '../services/authService';
 
 const SignupPage = () => {
   const navigate = useNavigate();
@@ -22,26 +23,20 @@ const SignupPage = () => {
     setLoading(true);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || '/api'}/auth/signup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      });
+      await authService.signup(form.name, form.email, form.password);
 
-      if (response.status === 409) {
+      navigate('/login');
+    } catch (err) {
+      const status = err?.response?.status;
+      const message = err?.response?.data?.message || err?.message || 'Signup failed. Please try again.';
+
+      if (status === 409) {
         setError('Account already exists. Please log in. Redirecting...');
         setTimeout(() => navigate('/login', { replace: true }), 1200);
         return;
       }
 
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.message || 'Signup failed. Please try again.');
-      }
-
-      navigate('/login');
-    } catch (err) {
-      setError(err.message || 'Signup failed. Please try again.');
+      setError(message);
     } finally {
       setLoading(false);
     }

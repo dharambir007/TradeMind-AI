@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import apiClient from "../services/api";
 import { fetchAIInsight } from "../services/aiService";
@@ -7,6 +7,9 @@ import { easeOutExpo } from "../utils/animations";
 
 const isAbortError = (err) =>
     err?.name === "CanceledError" || err?.name === "AbortError" || err?.code === "ERR_CANCELED";
+
+const INSIGHT_POLL_MS = 5 * 60 * 1000; // 5 minutes instead of 2 minutes
+const PREDICTION_POLL_MS = 3 * 60 * 1000; // 3 minutes instead of 1 minute
 
 const AISignalsPanel = memo(({ symbol }) => {
     const [prediction, setPrediction] = useState(null);
@@ -17,10 +20,17 @@ const AISignalsPanel = memo(({ symbol }) => {
     const [insightLoading, setInsightLoading] = useState(true);
     const [insightError, setInsightError] = useState("");
 
+    const lastFetchedPredSymbol = useRef("");
+    const lastFetchedInsightSymbol = useRef("");
+
     const symbolKey = String(symbol || "").trim().toUpperCase();
 
+    // Fetch prediction only when symbol actually changes
     useEffect(() => {
         if (!symbolKey) return;
+        // Skip if we already fetched for this exact symbol
+        if (lastFetchedPredSymbol.current === symbolKey && prediction) return;
+
         let active = true;
         const controller = new AbortController();
 
@@ -37,6 +47,7 @@ const AISignalsPanel = memo(({ symbol }) => {
                         throw new Error(res.data.message || "Prediction unavailable");
                     }
                     setPrediction(res.data);
+                    lastFetchedPredSymbol.current = symbolKey;
                     setLoading(false);
                 }
             } catch (err) {
@@ -47,7 +58,7 @@ const AISignalsPanel = memo(({ symbol }) => {
         };
 
         fetchPrediction();
-        const interval = window.setInterval(fetchPrediction, 60000);
+        const interval = window.setInterval(fetchPrediction, PREDICTION_POLL_MS);
 
         return () => {
             active = false;
@@ -56,8 +67,12 @@ const AISignalsPanel = memo(({ symbol }) => {
         };
     }, [symbolKey]);
 
+    // Fetch AI insight only when symbol actually changes
     useEffect(() => {
         if (!symbolKey) return;
+        // Skip if we already fetched for this exact symbol
+        if (lastFetchedInsightSymbol.current === symbolKey && aiInsight) return;
+
         let active = true;
         const controller = new AbortController();
 
@@ -71,6 +86,7 @@ const AISignalsPanel = memo(({ symbol }) => {
                 });
                 if (!active) return;
                 setAiInsight(data);
+                lastFetchedInsightSymbol.current = symbolKey;
                 setInsightLoading(false);
             } catch (err) {
                 if (!active || isAbortError(err)) return;
@@ -80,7 +96,7 @@ const AISignalsPanel = memo(({ symbol }) => {
         };
 
         loadInsight();
-        const interval = window.setInterval(loadInsight, 120000);
+        const interval = window.setInterval(loadInsight, INSIGHT_POLL_MS);
 
         return () => {
             active = false;

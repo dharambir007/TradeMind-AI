@@ -270,12 +270,7 @@ async function fetchChartViaYahooFinance(symbol, { range, interval }) {
     events: "div|split|earn",
     return: "object",
   };
-
-  try {
-    return await yahooSearch.chart(symbol, modernOptions, { validateResult: false });
-  } catch (error) {
-    throw error;
-  }
+  return yahooSearch.chart(symbol, modernOptions, { validateResult: false });
 }
 
 function withInFlightChartRequest(cacheKey, loader) {

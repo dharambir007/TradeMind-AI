@@ -27,9 +27,6 @@ export const stockService = {
         symbol,
         timeframe: timeframe || "3m",
         steps: steps || 3,
-      },
-      {
-        retry: true,
       }
     );
     return response.data;

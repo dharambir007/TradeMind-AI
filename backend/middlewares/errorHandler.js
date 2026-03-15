@@ -13,10 +13,18 @@ function errorHandler(error, req, res, next) {
   const statusCode = error?.statusCode || error?.status || 500;
   logger.error(`${req.method} ${req.originalUrl}`, error?.stack || error?.message || error);
 
+  // In production, hide internal error details from non-operational errors
+  const isOperational = error?.isOperational === true;
+  const isProd = process.env.NODE_ENV === "production";
+  const message =
+    isProd && !isOperational && statusCode === 500
+      ? "Internal server error"
+      : error?.message || "Internal server error";
+
   return res.status(statusCode).json({
     success: false,
-    message: error?.message || "Internal server error",
-    ...(error?.details ? { details: error.details } : {}),
+    message,
+    ...(error?.details && (isOperational || !isProd) ? { details: error.details } : {}),
   });
 }
 

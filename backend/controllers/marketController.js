@@ -7,17 +7,35 @@ const CACHE_TTL = 30;
 
 const getMarketStatus = asyncHandler(async (req, res) => {
   const response = await CacheService.remember("market:status:v2", CACHE_TTL, async () => {
-    const now = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-    const istDate = new Date(now);
-    const day = istDate.getDay();
-    const minutes = istDate.getHours() * 60 + istDate.getMinutes();
-    const isTradingDay = [1, 2, 3, 4, 5].includes(day);
+    // Use Intl.DateTimeFormat.formatToParts for reliable IST conversion
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "short",
+      hourCycle: "h23",
+    }).formatToParts(now);
+
+    const p = {};
+    for (const part of parts) p[part.type] = part.value;
+
+    const day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday);
+    const minutes = Number(p.hour) * 60 + Number(p.minute);
+    const isTradingDay = day >= 1 && day <= 5;
     const isWithinHours = minutes >= 555 && minutes < 930;
     const isOpen = isTradingDay && isWithinHours;
 
+    const hh = String(Number(p.hour) % 12 || 12).padStart(2, "0");
+    const mm = p.minute;
+    const ampm = Number(p.hour) < 12 ? "AM" : "PM";
+
     return {
       isOpen,
-      currentTime: istDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }),
+      currentTime: `${hh}:${mm} ${ampm}`,
       openTime: "09:15 AM",
       closeTime: "03:30 PM",
       message: isOpen ? "Market is Open" : "Market is Closed",

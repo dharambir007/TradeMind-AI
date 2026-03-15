@@ -55,7 +55,6 @@ apiClient.interceptors.response.use(
       (error.code === "ECONNABORTED" ||
         error.code === "ERR_NETWORK" ||
         !status ||
-        status === 429 ||
         status >= 500);
 
     if (shouldRetry) {

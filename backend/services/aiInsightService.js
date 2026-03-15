@@ -3,6 +3,8 @@ const { fetchYahooFinanceNews, fetchMarketMacroNews } = require("./newsService")
 const { generateInsightFromNews, generateMacroAnalysis } = require("./geminiService");
 const { normalizeSymbol } = require("../utils/symbolNormalizer");
 
+const logger = require("../utils/logger");
+
 class AIInsightService {
   static async getStockInsight(symbolInput, options = {}) {
     const symbol = normalizeSymbol(symbolInput);
@@ -15,7 +17,14 @@ class AIInsightService {
       if (cached) return cached;
     }
 
-    const headlines = await fetchYahooFinanceNews(symbol, limit);
+    let headlines;
+    try {
+      headlines = await fetchYahooFinanceNews(symbol, limit);
+    } catch (err) {
+      logger.warn(`[AIInsight] fetchYahooFinanceNews failed for ${symbol}:`, err.message);
+      headlines = [];
+    }
+
     if (!headlines.length) {
       return {
         success: false,
@@ -26,14 +35,26 @@ class AIInsightService {
       };
     }
 
-    const insight = await generateInsightFromNews({
-      symbol,
-      headlines: headlines.map((item) => ({
-        title: item.title,
-        source: item.source,
-        publishedAt: item.publishedAt,
-      })),
-    });
+    let insight;
+    try {
+      insight = await generateInsightFromNews({
+        symbol,
+        headlines: headlines.map((item) => ({
+          title: item.title,
+          source: item.source,
+          publishedAt: item.publishedAt,
+        })),
+      });
+    } catch (err) {
+      logger.warn(`[AIInsight] generateInsightFromNews failed for ${symbol}:`, err.message);
+      return {
+        success: false,
+        symbol,
+        summary: headlines.slice(0, 5).map((h) => h.title || ""),
+        sentiment: "Neutral",
+        insight: "AI analysis temporarily unavailable.",
+      };
+    }
 
     const response = {
       success: true,
@@ -44,7 +65,7 @@ class AIInsightService {
       timestamp: new Date().toISOString(),
     };
 
-    await CacheService.set(cacheKey, response, 180);
+    await CacheService.set(cacheKey, response, Number(process.env.AI_INSIGHT_CACHE_TTL) || 300);
     return response;
   }
 
@@ -55,15 +76,45 @@ class AIInsightService {
       if (cached) return cached;
     }
 
-    const headlines = await fetchMarketMacroNews(15);
-    const analysis = await generateMacroAnalysis(headlines);
+    let headlines;
+    try {
+      headlines = await fetchMarketMacroNews(15);
+    } catch (err) {
+      logger.warn("[AIInsight] fetchMarketMacroNews failed:", err.message);
+      headlines = [];
+    }
+
+    if (!headlines.length) {
+      return {
+        success: false,
+        summary: "Market macro news unavailable.",
+        sentiment: "Neutral",
+        newsCount: 0,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    let analysis;
+    try {
+      analysis = await generateMacroAnalysis(headlines);
+    } catch (err) {
+      logger.warn("[AIInsight] generateMacroAnalysis failed:", err.message);
+      return {
+        success: false,
+        summary: "Macro analysis temporarily unavailable.",
+        sentiment: "Neutral",
+        newsCount: headlines.length,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
     const response = {
       ...analysis,
       newsCount: headlines.length,
       timestamp: new Date().toISOString(),
     };
 
-    await CacheService.set(cacheKey, response, Number(process.env.AI_INSIGHT_CACHE_TTL) || 180);
+    await CacheService.set(cacheKey, response, Number(process.env.AI_INSIGHT_CACHE_TTL) || 300);
     return response;
   }
 }

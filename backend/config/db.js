@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const logger = require('../utils/logger');
 
 const MAX_RETRIES = Number(process.env.MONGO_RETRIES || 5);
 const RETRY_DELAY_MS = Number(process.env.MONGO_RETRY_DELAY_MS || 3000);
@@ -14,11 +15,16 @@ const connectDB = async () => {
   let attempt = 1;
   while (attempt <= MAX_RETRIES) {
     try {
-      const conn = await mongoose.connect(uri);
-      console.log(`MongoDB connected: ${conn.connection.host}`);
+      const conn = await mongoose.connect(uri, {
+        serverSelectionTimeoutMS: 10000,
+        socketTimeoutMS: 45000,
+        heartbeatFrequencyMS: 10000,
+        maxPoolSize: 10,
+      });
+      logger.info(`MongoDB connected: ${conn.connection.host}`);
       return conn;
     } catch (error) {
-      console.error(`MongoDB connection error (attempt ${attempt}/${MAX_RETRIES}):`, error.message);
+      logger.error(`MongoDB connection error (attempt ${attempt}/${MAX_RETRIES}):`, error.message);
       if (attempt === MAX_RETRIES) {
         throw error;
       }

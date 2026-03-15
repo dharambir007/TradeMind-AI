@@ -4,6 +4,7 @@ class AppError extends Error {
     this.name = "AppError";
     this.statusCode = statusCode;
     this.details = details;
+    this.isOperational = true; // Distinguishes known errors from programmer bugs
   }
 }
 
