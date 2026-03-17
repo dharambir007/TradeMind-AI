@@ -600,7 +600,14 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
       predictionSeriesRef.current.setData([]);
       setPredictionMeta(null);
       const backendMessage = String(error?.response?.data?.message || "").trim();
-      setPredictionError(error?.userMessage || backendMessage || WAKEUP_MESSAGE || PREDICTION_ERROR_MESSAGE);
+      const thrownMessage = String(error?.message || "").trim();
+      setPredictionError(
+        error?.userMessage ||
+          backendMessage ||
+          thrownMessage ||
+          WAKEUP_MESSAGE ||
+          PREDICTION_ERROR_MESSAGE
+      );
     } finally {
       setPredictionLoading(false);
     }
