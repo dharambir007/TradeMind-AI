@@ -88,7 +88,7 @@ function buildFallbackPrediction(symbol, candles, message) {
     probability: 0,
     current_price: round2(currentPrice),
     target_price: round2(currentPrice),
-    message: message || "Prediction service unavailable",
+    message: message || "AI service is waking up... please try again in 10 seconds.",
     timestamp: new Date().toISOString(),
   };
 }
@@ -181,7 +181,7 @@ class PredictionService {
           timestamp: new Date().toISOString(),
         };
       } catch (_) {
-        return buildFallbackPrediction(symbol, recentCandles, "Prediction service unavailable");
+        return buildFallbackPrediction(symbol, recentCandles);
       }
     });
   }
@@ -269,7 +269,7 @@ class PredictionService {
           timestamp: new Date().toISOString(),
         };
       } catch (_) {
-        const fallback = buildFallbackPrediction(symbol, recentCandles, "Prediction service unavailable");
+        const fallback = buildFallbackPrediction(symbol, recentCandles);
         return {
           success: false,
           symbol,

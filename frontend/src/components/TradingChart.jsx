@@ -6,6 +6,7 @@ import {
 } from "lightweight-charts";
 import { useSocket } from "../hooks/useSocket";
 import stockService from "../services/stockService";
+import { WAKEUP_MESSAGE } from "../utils/apiUrl";
 import { getCurrencySymbol } from "../utils/formatters";
 import {
   DEFAULT_TRADING_TIMEFRAME,
@@ -595,10 +596,11 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
       predictionSeriesRef.current.setData(predictionCandles);
       setPredictionMeta(payload?.predictionMeta ?? null);
       restoreVisibleRange(chart, visibleRange);
-    } catch {
+    } catch (error) {
       predictionSeriesRef.current.setData([]);
       setPredictionMeta(null);
-      setPredictionError(PREDICTION_ERROR_MESSAGE);
+      const backendMessage = String(error?.response?.data?.message || "").trim();
+      setPredictionError(error?.userMessage || backendMessage || WAKEUP_MESSAGE || PREDICTION_ERROR_MESSAGE);
     } finally {
       setPredictionLoading(false);
     }

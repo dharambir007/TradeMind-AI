@@ -1,13 +1,22 @@
 import os
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent
+PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_FOLDERS = [PROJECT_ROOT / "BANK_NIFTY_data", PROJECT_ROOT / "NIFTY_data"]
-OUTPUT_DIR = PROJECT_ROOT / "output"
-MODEL_PATH = OUTPUT_DIR / "model.pkl"
-METRICS_PATH = OUTPUT_DIR / "metrics.csv"
-FEATURE_IMPORTANCE_PATH = OUTPUT_DIR / "feature_importance.png"
-PREPROCESSED_DATA_PATH = OUTPUT_DIR / "preprocessed_data.parquet"
+
+_model_dir_env = os.getenv("MODEL_DIR", "").strip()
+if _model_dir_env:
+    configured_model_dir = Path(_model_dir_env).expanduser()
+    if not configured_model_dir.is_absolute():
+        configured_model_dir = Path(os.getcwd()).resolve() / configured_model_dir
+    OUTPUT_DIR = configured_model_dir.resolve()
+else:
+    OUTPUT_DIR = (PROJECT_ROOT / "output").resolve()
+
+MODEL_PATH = (OUTPUT_DIR / "model.pkl").resolve()
+METRICS_PATH = (OUTPUT_DIR / "metrics.csv").resolve()
+FEATURE_IMPORTANCE_PATH = (OUTPUT_DIR / "feature_importance.png").resolve()
+PREPROCESSED_DATA_PATH = (OUTPUT_DIR / "preprocessed_data.parquet").resolve()
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 

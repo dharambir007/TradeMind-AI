@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { getApiBaseUrl } from "../utils/apiUrl";
+
+const API_BASE_URL = getApiBaseUrl();
 
 const SettingsSidebar = ({ isOpen, onClose }) => {
   const navigate = useNavigate();
@@ -21,7 +24,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
       const token = localStorage.getItem("token");
       if (!token) return;
       try {
-        const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || "/api"}/user/me`, {
+        const res = await fetch(`${API_BASE_URL}/user/me`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.ok) {
@@ -39,7 +42,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
     setDeleting(true);
     const token = localStorage.getItem("token");
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || "/api"}/user/delete`, {
+      const res = await fetch(`${API_BASE_URL}/user/delete`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });

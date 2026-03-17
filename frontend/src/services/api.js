@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getApiBaseUrl, isWakeUpError, WAKEUP_MESSAGE } from "../utils/apiUrl";
 
 const API_TIMEOUT_MS = 10000;
 const MAX_RETRIES = 2;
@@ -8,10 +9,7 @@ function sleep(ms) {
 }
 
 function resolveBaseURL() {
-  const raw = String(import.meta.env.VITE_API_BASE_URL || "").trim();
-  if (!raw) return "/api";
-  if (/\/api\/?$/i.test(raw)) return raw.replace(/\/$/, "");
-  return `${raw.replace(/\/$/, "")}/api`;
+  return getApiBaseUrl();
 }
 
 const apiClient = axios.create({
@@ -61,6 +59,10 @@ apiClient.interceptors.response.use(
       config.__retryCount = retryCount + 1;
       await sleep(300 * config.__retryCount);
       return apiClient(config);
+    }
+
+    if (isWakeUpError(error)) {
+      error.userMessage = WAKEUP_MESSAGE;
     }
 
     if (status === 401) {

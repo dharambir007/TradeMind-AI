@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import SearchBar from "./SearchBar";
+import { getApiBaseUrl } from "../utils/apiUrl";
+
+const API_BASE_URL = getApiBaseUrl();
 
 const Navbar = () => {
   const [user, setUser] = useState(null);
@@ -14,7 +17,7 @@ const Navbar = () => {
       const token = localStorage.getItem("token");
       if (!token) return;
       try {
-        const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || "/api"}/user/me`, {
+        const res = await fetch(`${API_BASE_URL}/user/me`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.ok) {

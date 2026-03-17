@@ -1,6 +1,7 @@
 const { Server } = require("socket.io");
 const { redis, cache } = require("../config/redis");
 const Redis = require("ioredis");
+const { isAllowedOrigin } = require("../config/cors");
 const { startTickProducer, subscribeSymbols, unsubscribeSymbols } = require("./tickProducer");
 
 let io;
@@ -23,7 +24,13 @@ function normalizeSocketSymbol(raw) {
 }
 
 function initSocket(server) {
-  io = new Server(server, { cors: { origin: "*" } });
+  io = new Server(server, {
+    cors: {
+      origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
+      credentials: true,
+      methods: ["GET", "POST"],
+    },
+  });
 
   subscriber = new Redis({
     host: process.env.REDIS_HOST || 'localhost',

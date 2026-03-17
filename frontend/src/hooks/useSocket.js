@@ -1,16 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
+import { getSocketUrl } from "../utils/apiUrl";
 
 function resolveSocketUrl() {
-    const apiBase = import.meta.env.VITE_API_BASE_URL;
-    if (typeof apiBase === "string" && apiBase.trim()) {
-        if (/^https?:\/\//i.test(apiBase)) {
-            return apiBase.replace(/\/api\/?$/i, "");
-        }
-        // Relative API base like "/api": use current origin.
-        return window.location.origin;
-    }
-    return "http://localhost:5000";
+    return getSocketUrl();
 }
 
 const SOCKET_URL = resolveSocketUrl();

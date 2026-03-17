@@ -4,6 +4,7 @@ const cors = require("cors");
 const http = require("http");
 const connectDb = require("./config/db");
 const { initSocket } = require("./sockets/marketSocket");
+const { isAllowedOrigin } = require("./config/cors");
 const requestLogger = require("./middlewares/requestLogger");
 const { notFoundHandler, errorHandler } = require("./middlewares/errorHandler");
 const logger = require("./utils/logger");
@@ -72,7 +73,6 @@ const expressRateLimit = optionalRequire("express-rate-limit", null);
 const app = express();
 const server = http.createServer(app);
 const PORT = Number(process.env.PORT) || 5000;
-const IS_PROD = process.env.NODE_ENV === "production";
 
 // Exit on uncaught exceptions — process state is undefined after these
 process.on("uncaughtException", (error) => {
@@ -95,31 +95,6 @@ process.on("SIGTERM", () => {
   // Force exit if connections haven't closed within 15 seconds
   setTimeout(() => process.exit(0), 15000).unref();
 });
-
-function getAllowedOrigins() {
-  const base = [
-    "https://trade-mind-ai-umber.vercel.app",
-    ...(process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(",") : []),
-  ];
-
-  // Localhost origins only in non-production
-  if (!IS_PROD) {
-    base.push(
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "http://localhost:5175"
-    );
-  }
-
-  return base.map((value) => String(value || "").trim()).filter(Boolean);
-}
-
-function isAllowedOrigin(origin) {
-  if (!origin) return true;
-  const normalizedOrigin = String(origin || "").trim();
-  if (!normalizedOrigin) return true;
-  return getAllowedOrigins().includes(normalizedOrigin);
-}
 
 async function bootstrap() {
   await connectDb();
