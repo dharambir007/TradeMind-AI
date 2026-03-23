@@ -2,10 +2,11 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
-const connectDb = require("./config/db");
+const { connectDB, getDbState } = require("./config/db");
 const { initSocket } = require("./sockets/marketSocket");
 const { isAllowedOrigin } = require("./config/cors");
 const requestLogger = require("./middlewares/requestLogger");
+const requireDatabase = require("./middlewares/requireDatabase");
 const { notFoundHandler, errorHandler } = require("./middlewares/errorHandler");
 const logger = require("./utils/logger");
 
@@ -73,6 +74,7 @@ const expressRateLimit = optionalRequire("express-rate-limit", null);
 const app = express();
 const server = http.createServer(app);
 const PORT = Number(process.env.PORT) || 5000;
+let dbReconnectTimer = null;
 
 // Exit on uncaught exceptions — process state is undefined after these
 process.on("uncaughtException", (error) => {
@@ -86,6 +88,25 @@ process.on("unhandledRejection", (reason) => {
 });
 
 // Graceful shutdown on SIGTERM (sent by Render during deploys/scale-down)
+function scheduleDbReconnect(delayMs = 15000) {
+  const db = getDbState();
+  if (db.ready || db.readyState === 2 || dbReconnectTimer) {
+    return;
+  }
+
+  dbReconnectTimer = setTimeout(() => {
+    dbReconnectTimer = null;
+    connectDB().catch((error) => {
+      logger.error("Background MongoDB reconnect failed:", error?.message || error);
+      scheduleDbReconnect(delayMs);
+    });
+  }, delayMs);
+
+  if (typeof dbReconnectTimer.unref === "function") {
+    dbReconnectTimer.unref();
+  }
+}
+
 process.on("SIGTERM", () => {
   logger.info("SIGTERM received, shutting down gracefully");
   server.close(() => {
@@ -97,8 +118,6 @@ process.on("SIGTERM", () => {
 });
 
 async function bootstrap() {
-  await connectDb();
-
   app.set("trust proxy", 1);
   app.use(helmet());
   app.use(compression());
@@ -154,11 +173,11 @@ async function bootstrap() {
   app.get("/health", getHealth);
   app.get("/api/health", getHealth);
 
-  app.use("/api/auth", authRateLimit, authRoutes);
-  app.use("/api/user", userRoutes);
+  app.use("/api/auth", requireDatabase, authRateLimit, authRoutes);
+  app.use("/api/user", requireDatabase, userRoutes);
   app.use("/api/market", marketRoutes);
   app.use("/api/stocks", stockRoutes);
-  app.use("/api/watchlist", watchlistRoutes);
+  app.use("/api/watchlist", requireDatabase, watchlistRoutes);
   app.use("/api/ai-insight", aiInsightRateLimit, aiInsightRoutes);
   app.use("/api/prediction", predictionRoutes);
 
@@ -177,6 +196,11 @@ async function bootstrap() {
 
   server.listen(PORT, "0.0.0.0", () => {
     logger.info(`Server listening on port ${PORT} [${process.env.NODE_ENV || "development"}]`);
+  });
+
+  connectDB().catch((error) => {
+    logger.error("Initial MongoDB connection failed:", error?.message || error);
+    scheduleDbReconnect();
   });
 }
 

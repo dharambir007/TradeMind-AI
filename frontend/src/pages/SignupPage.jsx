@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import authService from '../services/authService';
+import { getApiConnectionHint } from '../utils/apiUrl';
 
 const SignupPage = () => {
   const navigate = useNavigate();
@@ -28,15 +29,18 @@ const SignupPage = () => {
       navigate('/login');
     } catch (err) {
       const status = err?.response?.status;
-      const message = err?.response?.data?.message || err?.message || 'Signup failed. Please try again.';
+      const serverMsg = err?.response?.data?.message;
+      const errCode = err?.code;
 
-      if (status === 409) {
+      if (errCode === 'ERR_NETWORK' || errCode === 'ECONNABORTED' || !status) {
+        setError(`Cannot connect to server. ${getApiConnectionHint()}`);
+      } else if (status === 409) {
         setError('Account already exists. Please log in. Redirecting...');
         setTimeout(() => navigate('/login', { replace: true }), 1200);
         return;
+      } else {
+        setError(serverMsg || err?.message || 'Signup failed. Please try again.');
       }
-
-      setError(message);
     } finally {
       setLoading(false);
     }

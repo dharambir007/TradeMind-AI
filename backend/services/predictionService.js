@@ -34,11 +34,64 @@ function normalizeConfidence(value) {
   return num <= 1 ? round2(num * 100) : round2(num);
 }
 
-function aggregateCandles(candles, intervalSeconds) {
+function sanitizePredictionCandle(candidate) {
+  if (!candidate) return null;
+
+  const timeValue = candidate.time ?? candidate.timestamp ?? candidate.date;
+  const parsedTime =
+    typeof timeValue === "string" && !/^\d+(\.\d+)?$/.test(timeValue)
+      ? Date.parse(timeValue)
+      : Number(timeValue);
+
+  const normalizedTime = Number.isFinite(parsedTime)
+    ? parsedTime > 1e12
+      ? Math.floor(parsedTime / 1000)
+      : Math.floor(parsedTime)
+    : null;
+
+  const open = Number(candidate.open);
+  const high = Number(candidate.high);
+  const low = Number(candidate.low);
+  const close = Number(candidate.close);
+  const volume = Number(candidate.volume) || 0;
+
+  if (![normalizedTime, open, high, low, close].every(Number.isFinite)) {
+    return null;
+  }
+
+  if (normalizedTime <= 0 || open <= 0 || high <= 0 || low <= 0 || close <= 0) {
+    return null;
+  }
+
+  return {
+    time: normalizedTime,
+    open,
+    high: Math.max(high, open, close),
+    low: Math.min(low, open, close),
+    close,
+    volume: Number.isFinite(volume) ? Math.max(0, volume) : 0,
+    date:
+      typeof candidate.date === "string" && candidate.date.trim()
+        ? candidate.date
+        : new Date(normalizedTime * 1000).toISOString(),
+  };
+}
+
+function sanitizePredictionCandles(candles) {
   if (!Array.isArray(candles) || !candles.length) return [];
 
+  return candles
+    .map(sanitizePredictionCandle)
+    .filter(Boolean)
+    .sort((left, right) => left.time - right.time);
+}
+
+function aggregateCandles(candles, intervalSeconds) {
+  const sanitizedCandles = sanitizePredictionCandles(candles);
+  if (!sanitizedCandles.length) return [];
+
   const buckets = new Map();
-  for (const candle of candles) {
+  for (const candle of sanitizedCandles) {
     const bucketTime = Math.floor(Number(candle.time) / intervalSeconds) * intervalSeconds;
     const existing = buckets.get(bucketTime);
 
@@ -166,7 +219,7 @@ class PredictionService {
       return cached;
     }
 
-    const candles = await MarketDataService.getPredictionCandles(symbol);
+    const candles = sanitizePredictionCandles(await MarketDataService.getPredictionCandles(symbol));
     if (candles.length < 30) {
       return buildFallbackPrediction(symbol, candles, "Insufficient data for prediction");
     }
@@ -227,7 +280,7 @@ class PredictionService {
       return cached;
     }
 
-    const sourceCandles = await MarketDataService.getPredictionCandles(symbol);
+    const sourceCandles = sanitizePredictionCandles(await MarketDataService.getPredictionCandles(symbol));
     const historicalData = aggregateCandles(sourceCandles, intervalSeconds).slice(-160);
 
     if (sourceCandles.length < 30 || !historicalData.length) {

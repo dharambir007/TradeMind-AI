@@ -3,6 +3,7 @@
 import argparse
 import joblib
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -15,29 +16,87 @@ logger = utils.setup_logger(__name__)
 
 MODELS = {}
 FEATURE_LISTS = {}
+MIN_REQUIRED_CANDLES = 60
+MAX_CANDLES_FOR_INFERENCE = 150
+
+
+def _print_and_log(message, level="info"):
+    print(message)
+    getattr(logger, level, logger.info)(message)
+
+
+def _candidate_paths(file_name):
+    return [
+        (config.OUTPUT_DIR / file_name).resolve(),
+        (config.PROJECT_ROOT / file_name).resolve(),
+    ]
+
+
+def _find_existing_path(file_name):
+    for candidate in _candidate_paths(file_name):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _safe_json(data, limit=2000):
+    try:
+        payload = json.dumps(data, default=str)
+    except Exception:
+        payload = str(data)
+    return payload if len(payload) <= limit else f"{payload[:limit]}...<truncated>"
 
 
 def load_all_models():
     """Load all available minute-level models."""
+    _print_and_log("Loading model...")
+    MODELS.clear()
+    FEATURE_LISTS.clear()
+
     for h in [3, 5, 10]:
-        model_path = config.OUTPUT_DIR / f"model_{h}min.pkl"
-        feature_path = config.OUTPUT_DIR / f"features_{h}min.txt"
+        model_path = _find_existing_path(f"model_{h}min.pkl")
+        feature_path = _find_existing_path(f"features_{h}min.txt")
 
-        if model_path.exists():
+        if model_path is not None:
+            _print_and_log(f"Loading model for {h}m from {model_path}")
             MODELS[h] = joblib.load(model_path)
-            logger.info(f"Loaded {h}-min model from {model_path}")
+            _print_and_log(f"Model loaded successfully for {h}m")
 
-            if feature_path.exists():
+            if feature_path is not None:
                 with open(feature_path) as f:
                     FEATURE_LISTS[h] = f.read().strip().split('\n')
         else:
-            logger.warning(f"Model not found: {model_path}")
+            _print_and_log(
+                f"Model not found for {h}m. Checked: {', '.join(str(p) for p in _candidate_paths(f'model_{h}min.pkl'))}",
+                level="warning",
+            )
 
-    if config.MODEL_PATH.exists():
-        MODELS['daily'] = joblib.load(config.MODEL_PATH)
-        logger.info(f"Loaded daily model from {config.MODEL_PATH}")
+    if not any(isinstance(key, int) for key in MODELS.keys()):
+        legacy_model_path = _find_existing_path("model_2min.pkl")
+        legacy_feature_path = _find_existing_path("features_2min.txt")
 
-    logger.info(f"Available models: {list(MODELS.keys())}")
+        if legacy_model_path is not None:
+            _print_and_log(f"Loading legacy minute fallback model from {legacy_model_path}")
+            legacy_model = joblib.load(legacy_model_path)
+            for horizon in [3, 5, 10]:
+                MODELS[horizon] = legacy_model
+            if legacy_feature_path is not None:
+                with open(legacy_feature_path) as f:
+                    features = [line.strip() for line in f.read().strip().split('\n') if line.strip()]
+                for horizon in [3, 5, 10]:
+                    FEATURE_LISTS[horizon] = features
+            _print_and_log("Model loaded successfully for legacy minute fallback")
+
+    fallback_model_path = _find_existing_path("model.pkl")
+    if fallback_model_path is not None:
+        _print_and_log(f"Loading fallback model from {fallback_model_path}")
+        fallback_model = joblib.load(fallback_model_path)
+        MODELS['daily'] = fallback_model
+        for horizon in [3, 5, 10]:
+            MODELS.setdefault(horizon, fallback_model)
+        _print_and_log("Model loaded successfully for daily fallback")
+
+    _print_and_log(f"Available models: {list(MODELS.keys())}")
 
 
 def engineer_features_from_candles(candles_df):
@@ -109,13 +168,51 @@ def engineer_features_from_candles(candles_df):
     return df
 
 
+def validate_input_candles(candles_df):
+    if candles_df is None or candles_df.empty:
+        raise ValueError("Invalid input")
+
+    df = candles_df.copy()
+    df.columns = [c.lower().strip() for c in df.columns]
+
+    required_columns = ["open", "high", "low", "close"]
+    missing = [column for column in required_columns if column not in df.columns]
+    if missing:
+        raise ValueError(f"Invalid input: missing columns {missing}")
+
+    if "volume" not in df.columns:
+        df["volume"] = 0.0
+
+    for column in ["open", "high", "low", "close", "volume"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    if df[["open", "high", "low", "close", "volume"]].isnull().any().any():
+        raise ValueError("Invalid input: null or non-numeric values found")
+
+    if len(df) < MIN_REQUIRED_CANDLES:
+        raise ValueError(f"Need at least {MIN_REQUIRED_CANDLES} candle rows, got {len(df)}")
+
+    if len(df) > MAX_CANDLES_FOR_INFERENCE:
+        df = df.tail(MAX_CANDLES_FOR_INFERENCE).reset_index(drop=True)
+
+    return df
+
+
 def predict(candles_df, horizon=5):
     """Make a prediction from recent candle data."""
     if horizon not in MODELS:
-        return {"error": f"No model for {horizon}-min. Available: {list(MODELS.keys())}"}
+        numeric_horizons = sorted(key for key in MODELS.keys() if isinstance(key, int))
+        if numeric_horizons:
+            horizon = min(numeric_horizons, key=lambda value: abs(value - horizon))
+        elif 'daily' in MODELS:
+            horizon = 'daily'
+        else:
+            return {"error": f"No model for {horizon}-min. Available: {list(MODELS.keys())}"}
 
-    if len(candles_df) < 60:
-        return {"error": f"Need at least 60 candle rows, got {len(candles_df)}"}
+    try:
+        candles_df = validate_input_candles(candles_df)
+    except ValueError as exc:
+        return {"error": str(exc)}
 
     df = engineer_features_from_candles(candles_df)
 
@@ -169,6 +266,10 @@ def create_app():
             "models_loaded": list(MODELS.keys()),
         })
 
+    @app.route('/test', methods=['GET'])
+    def test():
+        return jsonify({"message": "API working", "status": "success"})
+
     @app.route('/models', methods=['GET'])
     def list_models():
         return jsonify({
@@ -178,8 +279,14 @@ def create_app():
 
     @app.route('/predict', methods=['POST'])
     def predict_endpoint():
+        start = time.time()
         try:
             body = request.get_json()
+            print("Incoming request:", _safe_json(body))
+            print("Prediction started")
+            if not isinstance(body, dict):
+                return jsonify({"error": "Invalid input"}), 400
+
             horizon = body.get('horizon', 5)
             data = body.get('data', [])
 
@@ -192,9 +299,16 @@ def create_app():
             if "error" in result:
                 return jsonify(result), 400
 
-            return jsonify(result)
+            response = {
+                "status": "success",
+                "prediction": result,
+            }
+            print("Prediction output:", _safe_json(response))
+            print("Response time:", round(time.time() - start, 4))
+            return jsonify(response)
 
         except Exception as e:
+            print("ERROR:", str(e))
             logger.error(f"Prediction error: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
 
@@ -242,6 +356,7 @@ if __name__ == "__main__":
             logger.info("Endpoints:")
             logger.info("  POST /predict  - Make predictions")
             logger.info("  GET  /health   - Health check")
+            logger.info("  GET  /test     - Test route")
             logger.info("  GET  /models   - List models")
             app.run(host='0.0.0.0', port=args.port, debug=False)
         else:

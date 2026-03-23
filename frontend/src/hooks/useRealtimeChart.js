@@ -1,4 +1,10 @@
 import { useEffect, useRef, useCallback } from "react";
+import {
+    getTimeframeIntervalMinutes,
+    mergeTickIntoCandles,
+    normalizeTickTimestampMs,
+    sortAndDeduplicateCandles,
+} from "../utils/liveCandles";
 
 const INTRADAY_INTERVAL_SECONDS = Object.freeze({
     "1m": 60,
@@ -59,40 +65,66 @@ export function useRealtimeChart({
         const volume = Number.isFinite(parsedVolume) ? parsedVolume : 0;
         const change = Number.isFinite(parsedChange) ? parsedChange : 0;
         const changePercent = Number.isFinite(parsedChangePercent) ? parsedChangePercent : 0;
-        const now = Math.floor(Date.now() / 1000);
+        const timestampMs = normalizeTickTimestampMs(tick.time);
+        const tickTimeSeconds = Math.floor(timestampMs / 1000);
 
         const normalizedInterval = normalizeIntervalKey(interval, "useRealtimeChart");
-        const candleTime = getCandleTime(now, normalizedInterval);
-        const lastCandle = lastCandleRef.current;
+        const intervalMinutes = getTimeframeIntervalMinutes(normalizedInterval);
 
         let updatedCandle;
-        const isNewPeriod = !lastCandle || lastCandle.time !== candleTime;
+        let isNewPeriod = false;
 
-        if (!isNewPeriod) {
-            updatedCandle = {
-                time: candleTime,
-                open: lastCandle.open,
-                high: Math.max(lastCandle.high, price),
-                low: Math.min(lastCandle.low, price),
-                close: price,
-            };
+        if (Number.isFinite(intervalMinutes)) {
+            const merged = mergeTickIntoCandles({
+                candles: realCandlesRef.current,
+                price,
+                timestampMs,
+                intervalMinutes,
+                intervalLabel: normalizedInterval,
+                volume,
+                enableLogs: true,
+            });
+
+            if (merged.ignored || !merged.latestCandle) {
+                return;
+            }
+
+            updatedCandle = merged.latestCandle;
+            isNewPeriod = merged.isNewCandle;
+            realCandlesRef.current = merged.candles;
+            lastCandleRef.current = updatedCandle;
         } else {
-            updatedCandle = {
-                time: candleTime,
-                open: price,
-                high: price,
-                low: price,
-                close: price,
-            };
-        }
+            const candleTime = getCandleTime(tickTimeSeconds, normalizedInterval);
+            const lastCandle = lastCandleRef.current;
+            isNewPeriod = !lastCandle || lastCandle.time !== candleTime;
 
-        lastCandleRef.current = updatedCandle;
+            if (!isNewPeriod) {
+                updatedCandle = {
+                    time: candleTime,
+                    open: lastCandle.open,
+                    high: Math.max(lastCandle.high, price),
+                    low: Math.min(lastCandle.low, price),
+                    close: price,
+                };
+            } else {
+                updatedCandle = {
+                    time: candleTime,
+                    open: price,
+                    high: price,
+                    low: price,
+                    close: price,
+                };
+            }
 
-        const reals = realCandlesRef.current;
-        if (reals.length && reals[reals.length - 1].time === candleTime) {
-            reals[reals.length - 1] = updatedCandle;
-        } else {
-            reals.push(updatedCandle);
+            lastCandleRef.current = updatedCandle;
+
+            const reals = sortAndDeduplicateCandles(realCandlesRef.current);
+            if (reals.length && reals[reals.length - 1].time === candleTime) {
+                reals[reals.length - 1] = updatedCandle;
+            } else {
+                reals.push(updatedCandle);
+            }
+            realCandlesRef.current = reals;
         }
 
         try {
@@ -103,7 +135,7 @@ export function useRealtimeChart({
 
         // consume predicted candles that are now in the past
         if (isNewPeriod && predictedCandlesRef.current.length) {
-            const realTimeNum = timeToNum(candleTime);
+            const realTimeNum = timeToNum(updatedCandle.time);
 
             const remaining = [];
             let consumedCount = 0;
@@ -140,7 +172,7 @@ export function useRealtimeChart({
             const isUp = updatedCandle.close >= updatedCandle.open;
             try {
                 volumeSeriesRef.current.update({
-                    time: candleTime,
+                    time: updatedCandle.time,
                     value: volume,
                     color: isUp ? "rgba(16,185,129,0.18)" : "rgba(239,68,68,0.18)",
                 });
@@ -155,7 +187,7 @@ export function useRealtimeChart({
                 change,
                 changePercent,
                 volume,
-                time: now,
+                time: tickTimeSeconds,
             });
         }
     }, [tick, interval]);

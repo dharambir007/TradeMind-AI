@@ -116,7 +116,7 @@ function decodeYahooMessage(buf) {
       } else if (wireType === 0) {
         let value = 0, shift = 0, b;
         do { b = buf[offset++]; value |= (b & 0x7f) << shift; shift += 7; } while (b & 0x80);
-        if (fieldNumber === 3) result.time = value * 1000;
+        if (fieldNumber === 3) result.time = value; // Unix seconds — do NOT multiply; frontend reads as seconds
         else if (fieldNumber === 7) result.volume = value;
       } else if (wireType === 1) offset += 8;
       else break;

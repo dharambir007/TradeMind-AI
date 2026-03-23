@@ -112,6 +112,32 @@ function getChartStaleTtlSeconds(interval) {
   return INTRADAY_INTERVALS.has(String(interval || "").toLowerCase()) ? 180 : 900;
 }
 
+function sanitizeRawCandle(candidate) {
+  const time = Number(candidate?.time);
+  const open = Number(candidate?.open);
+  const high = Number(candidate?.high);
+  const low = Number(candidate?.low);
+  const close = Number(candidate?.close);
+  const volume = Number(candidate?.volume) || 0;
+
+  if (![time, open, high, low, close].every(Number.isFinite)) {
+    return null;
+  }
+
+  if (time <= 0 || open <= 0 || high <= 0 || low <= 0 || close <= 0) {
+    return null;
+  }
+
+  return {
+    time: Math.floor(time),
+    open,
+    high: Math.max(high, open, close),
+    low: Math.min(low, open, close),
+    close,
+    volume: Number.isFinite(volume) ? Math.max(0, volume) : 0,
+  };
+}
+
 function buildCandlesFromResult(result) {
   const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
   const quote = result?.indicators?.quote?.[0] || {};
@@ -123,16 +149,16 @@ function buildCandlesFromResult(result) {
 
   const candles = [];
   for (let index = 0; index < timestamps.length; index += 1) {
-    const item = {
+    const item = sanitizeRawCandle({
       time: Number(timestamps[index]),
       open: Number(open[index]),
       high: Number(high[index]),
       low: Number(low[index]),
       close: Number(close[index]),
       volume: Number(volume[index]) || 0,
-    };
+    });
 
-    if (![item.time, item.open, item.high, item.low, item.close].every(Number.isFinite)) {
+    if (!item) {
       continue;
     }
 

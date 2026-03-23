@@ -1,5 +1,9 @@
 export const WAKEUP_MESSAGE = "AI service is waking up... please try again in 10 seconds.";
 
+function isLocalUrl(value) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(String(value || "").trim());
+}
+
 function sanitizeUrl(raw) {
   const value = String(raw || "").trim();
   if (!value) return "";
@@ -15,8 +19,13 @@ function sanitizeUrl(raw) {
 export function getApiBaseUrl() {
   const raw = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || "";
   const sanitized = sanitizeUrl(raw);
+  const isLocalDev =
+    import.meta.env.DEV &&
+    typeof window !== "undefined" &&
+    /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
 
   if (!sanitized) return "/api";
+  if (isLocalDev && !isLocalUrl(sanitized)) return "/api";
   if (/\/api\/?$/i.test(sanitized)) return sanitized.replace(/\/$/, "");
   return `${sanitized.replace(/\/$/, "")}/api`;
 }
@@ -40,4 +49,12 @@ export function isWakeUpError(error) {
     status === 503 ||
     status === 504
   );
+}
+
+export function getApiConnectionHint() {
+  const apiBase = getApiBaseUrl();
+  if (apiBase === "/api") {
+    return "Make sure the backend is running on port 5000.";
+  }
+  return `Current API target: ${apiBase}.`;
 }

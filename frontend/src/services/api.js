@@ -1,7 +1,8 @@
 import axios from "axios";
 import { getApiBaseUrl, isWakeUpError, WAKEUP_MESSAGE } from "../utils/apiUrl";
 
-const API_TIMEOUT_MS = 10000;
+// Auth endpoints hit MongoDB; Atlas free tier can have cold-start latency > 10s
+const API_TIMEOUT_MS = 20000;
 const MAX_RETRIES = 2;
 
 function sleep(ms) {

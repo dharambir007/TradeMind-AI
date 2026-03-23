@@ -30,7 +30,8 @@ export const TIMEFRAME_PRESETS = Object.freeze({
     key: "15m",
     label: "15m",
     apiInterval: "15m",
-    range: "1mo",
+    // Yahoo Finance only serves 15m intraday data for up to 5 trading days
+    range: "5d",
     bucketSeconds: 900,
     predictionTimeframe: "10m",
     intraday: true,
@@ -39,7 +40,8 @@ export const TIMEFRAME_PRESETS = Object.freeze({
     key: "1h",
     label: "1h",
     apiInterval: "1h",
-    range: "3mo",
+    // Yahoo Finance supports 1h granularity for up to 1 month
+    range: "1mo",
     bucketSeconds: 3600,
     predictionTimeframe: "10m",
     intraday: true,
@@ -274,23 +276,30 @@ export function getLiveCandleTime(unixTime, timeframe) {
   return getBucketTime(unixTime, preset.bucketSeconds);
 }
 
+// IST locale + timezone constants — reused across both formatters
+const IST_LOCALE = "en-IN";
+const IST_TZ = "Asia/Kolkata";
+
 export function formatAxisTime(unixTime, timeframe) {
   const date = new Date(Number(unixTime) * 1000);
   if (!Number.isFinite(date.getTime())) return "";
 
   const preset = getTimeframePreset(timeframe);
   if (preset.intraday) {
-    return date.toLocaleTimeString([], {
+    // Always display in IST (Asia/Kolkata) regardless of browser locale
+    return date.toLocaleTimeString(IST_LOCALE, {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
+      timeZone: IST_TZ,
     });
   }
 
-  return date.toLocaleDateString([], {
+  return date.toLocaleDateString(IST_LOCALE, {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone: IST_TZ,
   });
 }
 

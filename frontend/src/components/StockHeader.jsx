@@ -3,8 +3,13 @@ import { motion as Motion } from "framer-motion";
 import { getCurrencySymbol, formatPrice } from "../utils/formatters";
 
 const StockHeader = memo(({ stock }) => {
-  const isUp = Number(stock.change) >= 0 || Number(stock.changePercent) >= 0;
-  const delta = `${stock.change ?? 0} (${stock.changePercent ?? 0}%)`;
+  const changeNum = Number(stock.change);
+  const changePctNum = Number(stock.changePercent);
+  const isUp = changeNum >= 0;
+  const sign = isUp ? "+" : "";
+  const delta = Number.isFinite(changeNum) && Number.isFinite(changePctNum)
+    ? `${sign}${changeNum.toFixed(2)} pts (${sign}${changePctNum.toFixed(2)}%)`
+    : "--";
   const cur = stock.currency || "USD";
   const sym = getCurrencySymbol(cur);
 

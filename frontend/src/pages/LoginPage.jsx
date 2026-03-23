@@ -1,6 +1,7 @@
-﻿import { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import authService from '../services/authService';
+import { getApiConnectionHint } from '../utils/apiUrl';
 
 const LoginPage = () => {
   const navigate = useNavigate();
@@ -24,10 +25,23 @@ const LoginPage = () => {
 
     try {
       await authService.login(form.email, form.password);
-
       navigate('/dashboard', { replace: true });
     } catch (err) {
-      const message = err?.response?.data?.message || err?.message || 'Login failed. Please try again.';
+      const status = err?.response?.status;
+      const serverMsg = err?.response?.data?.message;
+      const errCode = err?.code;
+
+      let message;
+      if (errCode === 'ERR_NETWORK' || errCode === 'ECONNABORTED' || !status) {
+        message = `Cannot connect to server. ${getApiConnectionHint()}`;
+      } else if (status === 401 || status === 400) {
+        message = serverMsg || 'Invalid email or password.';
+      } else if (status === 429) {
+        message = 'Too many login attempts. Please wait a moment and try again.';
+      } else {
+        message = serverMsg || err?.message || 'Login failed. Please try again.';
+      }
+
       setError(message);
     } finally {
       setLoading(false);

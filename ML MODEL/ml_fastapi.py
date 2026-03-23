@@ -1,6 +1,7 @@
 """Stock prediction FastAPI service."""
 
 import os
+import json
 from dotenv import load_dotenv
 load_dotenv()  # Load .env before anything reads env vars
 
@@ -14,7 +15,7 @@ import time
 import joblib
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Tuple
@@ -39,9 +40,62 @@ TIMEFRAME_FEATURE_FILES = {
 FALLBACK_TIMEFRAME = "5m"
 LEGACY_MODEL_FILE = "model_2min.pkl"
 LEGACY_FEATURE_FILE = "features_2min.txt"
+MIN_REQUIRED_CANDLES = 60
+MAX_CANDLES_FOR_INFERENCE = 150
+SLOW_REQUEST_SECONDS = 2.0
 
 pipelines: Dict[str, Any] = {}
 feature_lists: Dict[str, List[str]] = {}
+service_state: Dict[str, Any] = {
+    "startup_time": None,
+    "model_loaded": False,
+    "startup_error": None,
+    "loaded_models": [],
+    "loaded_model_paths": {},
+}
+
+
+def _print_and_log(message: str, level: str = "info") -> None:
+    print(message)
+    getattr(logger, level, logger.info)(message)
+
+
+def _candidate_paths(file_name: str) -> List[Any]:
+    return [
+        (config.OUTPUT_DIR / file_name).resolve(),
+        (config.PROJECT_ROOT / file_name).resolve(),
+    ]
+
+
+def _find_existing_path(file_name: str) -> Optional[Any]:
+    for candidate in _candidate_paths(file_name):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _safe_json(data: Any, limit: int = 2000) -> str:
+    try:
+        payload = json.dumps(data, default=str)
+    except Exception:
+        payload = str(data)
+    return payload if len(payload) <= limit else f"{payload[:limit]}...<truncated>"
+
+
+def _request_preview(payload: Dict[str, Any]) -> Dict[str, Any]:
+    candles = payload.get("candles") if isinstance(payload, dict) else None
+    preview: Dict[str, Any] = {}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key != "candles":
+                preview[key] = value
+    if isinstance(candles, list):
+        preview["candles_count"] = len(candles)
+        preview["first_candle"] = candles[0] if candles else None
+        preview["last_candle"] = candles[-1] if candles else None
+    else:
+        preview["candles_count"] = 0
+    return preview
 
 
 class Candle(BaseModel):
@@ -57,6 +111,7 @@ class PredictionRequest(BaseModel):
     horizon: int = 5
 
 class PredictionResponse(BaseModel):
+    status: str
     prediction: float
     direction: str
     probability: float = 0.0
@@ -65,58 +120,76 @@ class PredictionResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pipelines, feature_lists
-    logger.info("Loading model...")
+    service_state["startup_time"] = time.time()
+    service_state["model_loaded"] = False
+    service_state["startup_error"] = None
+    service_state["loaded_models"] = []
+    service_state["loaded_model_paths"] = {}
+    _print_and_log("Loading model...")
     try:
         pipelines = {}
         feature_lists = {}
+        loaded_paths: Dict[str, str] = {}
 
         for timeframe, model_file in TIMEFRAME_MODEL_FILES.items():
-            model_path = config.OUTPUT_DIR / model_file
-            feature_path = config.OUTPUT_DIR / TIMEFRAME_FEATURE_FILES[timeframe]
+            model_path = _find_existing_path(model_file)
+            feature_path = _find_existing_path(TIMEFRAME_FEATURE_FILES[timeframe])
 
-            if not model_path.exists():
-                logger.warning("Model file missing for %s: %s", timeframe, model_path)
+            if model_path is None:
+                _print_and_log(
+                    f"Model file missing for {timeframe}. Checked: {', '.join(str(p) for p in _candidate_paths(model_file))}",
+                    level="warning",
+                )
                 continue
 
+            _print_and_log(f"Loading model for {timeframe} from {model_path}")
             pipelines[timeframe] = joblib.load(model_path)
-            logger.info("Loaded %s model from %s", timeframe, model_path)
+            loaded_paths[timeframe] = str(model_path)
+            _print_and_log(f"Model loaded successfully for {timeframe}")
 
-            if feature_path.exists():
+            if feature_path is not None:
                 features = feature_path.read_text().strip().split('\n')
                 feature_lists[timeframe] = [f.strip() for f in features if f.strip()]
-                logger.info(
-                    "Loaded %s feature list (%s features)",
-                    timeframe,
-                    len(feature_lists[timeframe]),
+                _print_and_log(
+                    f"Loaded {timeframe} feature list with {len(feature_lists[timeframe])} features from {feature_path}"
                 )
             else:
-                logger.warning("Feature list missing for %s: %s", timeframe, feature_path)
+                _print_and_log(
+                    f"Feature list missing for {timeframe}. Checked: {', '.join(str(p) for p in _candidate_paths(TIMEFRAME_FEATURE_FILES[timeframe]))}",
+                    level="warning",
+                )
 
         if not pipelines:
-            legacy_model_path = config.OUTPUT_DIR / LEGACY_MODEL_FILE
-            legacy_feature_path = config.OUTPUT_DIR / LEGACY_FEATURE_FILE
+            legacy_model_path = _find_existing_path(LEGACY_MODEL_FILE)
+            legacy_feature_path = _find_existing_path(LEGACY_FEATURE_FILE)
 
-            if legacy_model_path.exists():
+            if legacy_model_path is not None:
+                _print_and_log(f"Loading fallback model from {legacy_model_path}", level="warning")
                 pipelines[FALLBACK_TIMEFRAME] = joblib.load(legacy_model_path)
-                logger.warning(
-                    "No timeframe-specific minute models found; using legacy fallback %s for %s",
-                    legacy_model_path,
-                    FALLBACK_TIMEFRAME,
+                loaded_paths[FALLBACK_TIMEFRAME] = str(legacy_model_path)
+                _print_and_log(
+                    f"No timeframe-specific minute models found; using legacy fallback {legacy_model_path} for {FALLBACK_TIMEFRAME}",
+                    level="warning",
                 )
-                if legacy_feature_path.exists():
+                if legacy_feature_path is not None:
                     features = legacy_feature_path.read_text().strip().split('\n')
                     feature_lists[FALLBACK_TIMEFRAME] = [f.strip() for f in features if f.strip()]
             elif config.MODEL_PATH.exists():
+                _print_and_log(f"Loading fallback daily model from {config.MODEL_PATH}", level="warning")
                 pipelines[FALLBACK_TIMEFRAME] = joblib.load(config.MODEL_PATH)
-                logger.warning(
-                    "Minute models not found, fell back to daily model %s for %s",
-                    config.MODEL_PATH,
-                    FALLBACK_TIMEFRAME,
+                loaded_paths[FALLBACK_TIMEFRAME] = str(config.MODEL_PATH)
+                _print_and_log(
+                    f"Minute models not found, fell back to daily model {config.MODEL_PATH} for {FALLBACK_TIMEFRAME}",
+                    level="warning",
                 )
             else:
                 raise RuntimeError("No model file found")
 
-        logger.info("Warming up model...")
+        service_state["model_loaded"] = True
+        service_state["loaded_models"] = sorted(pipelines.keys())
+        service_state["loaded_model_paths"] = loaded_paths
+        _print_and_log(f"Model loaded successfully. Available models: {service_state['loaded_models']}")
+        _print_and_log("Warming up model...")
         warmup_data = pd.DataFrame([{
             'open': 100.0, 'high': 105.0, 'low': 95.0, 'close': 102.0, 'volume': 1000,
             'date': '2023-01-01 10:00:00'
@@ -125,18 +198,21 @@ async def lifespan(app: FastAPI):
         try:
             for timeframe in pipelines.keys():
                 _ = _predict_logic(warmup_data, 5, timeframe=timeframe)
-            logger.info("Model warm-up complete for %s", ", ".join(sorted(pipelines.keys())))
+            _print_and_log(f"Model warm-up complete for {', '.join(sorted(pipelines.keys()))}")
         except Exception as e:
-            logger.warning(f"Warm-up failed (non-critical): {e}")
+            _print_and_log(f"Warm-up failed (non-critical): {e}", level="warning")
 
     except Exception as e:
-        logger.error(f"Failed to load model: {e}")
+        service_state["model_loaded"] = False
+        service_state["startup_error"] = str(e)
+        _print_and_log(f"ERROR: Failed to load model: {e}", level="error")
         raise RuntimeError("Could not load model")
 
     yield
 
     pipelines = {}
     feature_lists = {}
+    service_state["model_loaded"] = False
 
 app = FastAPI(lifespan=lifespan)
 
@@ -151,6 +227,76 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    started_at = time.perf_counter()
+    print(f"Incoming {request.method} request: {request.url.path}")
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration = time.perf_counter() - started_at
+        print(f"ERROR: {exc}")
+        print("Response time:", round(duration, 4))
+        logger.error("Unhandled request error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+        raise
+
+    duration = time.perf_counter() - started_at
+    print("Response time:", round(duration, 4))
+    logger.info(
+        "Completed %s %s with status=%s in %.4fs",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration,
+    )
+    if duration > SLOW_REQUEST_SECONDS:
+        logger.warning("Slow request detected on %s %s: %.4fs", request.method, request.url.path, duration)
+    return response
+
+
+def _validate_request_candles(
+    raw_candles: List[Dict[str, Any]],
+    *,
+    min_candles: int = MIN_REQUIRED_CANDLES,
+    max_candles: int = MAX_CANDLES_FOR_INFERENCE,
+) -> pd.DataFrame:
+    if not isinstance(raw_candles, list) or not raw_candles:
+        raise ValueError("Invalid input")
+
+    df = pd.DataFrame(raw_candles)
+    required_columns = ("open", "high", "low", "close")
+
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Invalid input: missing columns {missing_columns}")
+
+    if "volume" not in df.columns:
+        df["volume"] = 0.0
+
+    for column in ("open", "high", "low", "close", "volume"):
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    if df[["open", "high", "low", "close", "volume"]].isnull().any().any():
+        raise ValueError("Invalid input: null or non-numeric values found")
+
+    if (df["close"] <= 0).any() or (df["open"] <= 0).any() or (df["high"] <= 0).any() or (df["low"] <= 0).any():
+        raise ValueError("Invalid input: OHLC values must be positive")
+
+    if (df["high"] < df[["open", "close", "low"]].max(axis=1)).any():
+        raise ValueError("Invalid input: high must be >= open/close/low")
+
+    if (df["low"] > df[["open", "close", "high"]].min(axis=1)).any():
+        raise ValueError("Invalid input: low must be <= open/close/high")
+
+    if len(df) < min_candles:
+        raise ValueError(f"Need at least {min_candles} candles, got {len(df)}")
+
+    if len(df) > max_candles:
+        df = df.tail(max_candles).reset_index(drop=True)
+
+    return df
 
 
 def _align_features(
@@ -283,6 +429,9 @@ def _predict_logic(
     timeframe: Optional[str] = None,
     interval_seconds: Optional[int] = None,
 ):
+    if len(df) > MAX_CANDLES_FOR_INFERENCE:
+        df = df.tail(MAX_CANDLES_FOR_INFERENCE).reset_index(drop=True)
+
     X = engineer_features_from_candles(df)
 
     if X.empty:
@@ -306,7 +455,13 @@ async def health_check():
         "status": "ok",
         "model_loaded": bool(pipelines),
         "loaded_models": sorted(pipelines.keys()),
+        "startup_error": service_state.get("startup_error"),
     }
+
+
+@app.get("/test")
+async def test():
+    return {"message": "API working", "status": "success"}
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_endpoint(request: PredictionRequest):
@@ -316,8 +471,11 @@ async def predict_endpoint(request: PredictionRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
+        payload = request.model_dump()
+        print("Incoming request:", _safe_json(_request_preview(payload)))
+        print("Prediction started")
         data = [c.model_dump() for c in request.candles]
-        df = pd.DataFrame(data)
+        df = _validate_request_candles(data)
 
         pred_return = _predict_logic(df, request.horizon)
 
@@ -327,17 +485,26 @@ async def predict_endpoint(request: PredictionRequest):
 
         end_time = time.perf_counter()
         processing_time = (end_time - start_time) * 1000
+        print("Response time:", round(end_time - start_time, 4))
 
-        return {
+        result = {
+            "status": "success",
             "prediction": pred_return,
             "direction": direction,
             "probability": confidence,
             "processing_time_ms": round(processing_time, 2)
         }
+        print("Prediction output:", _safe_json(result))
+        if (end_time - start_time) > SLOW_REQUEST_SECONDS:
+            logger.warning("Prediction exceeded target latency: %.4fs", end_time - start_time)
+
+        return result
 
     except ValueError as ve:
+        print("ERROR:", str(ve))
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
+        print("ERROR:", str(e))
         logger.error(f"Prediction error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Prediction error: {type(e).__name__}: {e}")
 
@@ -362,6 +529,7 @@ class PredictedCandle(BaseModel):
     step: int
 
 class PredictionCandlesResponse(BaseModel):
+    status: str
     predicted_candles: List[PredictedCandle]
     direction: str
     confidence: float
@@ -733,19 +901,11 @@ async def predict_candles_endpoint(request: PredictionCandlesRequest):
     steps = max(1, min(int(request.steps), 30))
 
     try:
+        payload = request.model_dump()
+        print("Incoming request:", _safe_json(_request_preview(payload)))
+        print("Prediction started")
         data = [c.model_dump() for c in request.candles]
-        df = pd.DataFrame(data)
-
-        for col in ("open", "high", "low", "close", "volume"):
-            if col not in df.columns:
-                raise ValueError(f"Missing required column '{col}'")
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
-
-        if len(df) < 50:
-            raise ValueError(f"Need at least 50 candles, got {len(df)}")
-        if len(df) > 100:
-            df = df.tail(100).reset_index(drop=True)
+        df = _validate_request_candles(data)
 
         if "date" in df.columns:
             last_ts = _safe_timestamp_to_seconds(df["date"].iloc[-1])
@@ -814,8 +974,10 @@ async def predict_candles_endpoint(request: PredictionCandlesRequest):
 
         end_time = time.perf_counter()
         processing_time = (end_time - start_time) * 1000
+        print("Response time:", round(end_time - start_time, 4))
 
-        return PredictionCandlesResponse(
+        result = PredictionCandlesResponse(
+            status="success",
             predicted_candles=predicted_candles,
             direction=overall_direction,
             confidence=avg_confidence,
@@ -823,10 +985,16 @@ async def predict_candles_endpoint(request: PredictionCandlesRequest):
             target_price=round(final_close, 2),
             processing_time_ms=round(processing_time, 2),
         )
+        print("Prediction output:", _safe_json(result.model_dump()))
+        if (end_time - start_time) > SLOW_REQUEST_SECONDS:
+            logger.warning("Predict-candles exceeded target latency: %.4fs", end_time - start_time)
+        return result
 
     except ValueError as ve:
+        print("ERROR:", str(ve))
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
+        print("ERROR:", str(e))
         logger.error(f"Predict-candles error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal prediction error")
 

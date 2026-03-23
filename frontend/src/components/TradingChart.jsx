@@ -19,6 +19,12 @@ import {
   transformMarketDataToCandles,
   transformPredictionToCandles,
 } from "../utils/chartTransforms";
+import {
+  getTimeframeIntervalMinutes,
+  mergeTickIntoCandles,
+  normalizeTickTimestampMs,
+  sortAndDeduplicateCandles,
+} from "../utils/liveCandles";
 
 const CHART_HEIGHT = 460;
 const ERROR_MESSAGE = "Market data temporarily unavailable";
@@ -33,6 +39,7 @@ const GHOST_UP = "rgba(22, 214, 161, 0.28)";
 const GHOST_DOWN = "rgba(255, 77, 87, 0.28)";
 const GHOST_UP_WICK = "rgba(22, 214, 161, 0.82)";
 const GHOST_DOWN_WICK = "rgba(255, 77, 87, 0.82)";
+const TRACKED_LIVE_TIMEFRAMES = Object.freeze(["1m", "5m"]);
 
 function addCandlestickSeries(chart, options) {
   if (typeof chart.addCandlestickSeries === "function") {
@@ -111,11 +118,65 @@ function toComparableTime(value) {
   return null;
 }
 
+function createTimeframeCandleStore() {
+  return {
+    candles1m: [],
+    candles5m: [],
+    byTimeframe: {},
+  };
+}
+
+function getTimeframeStoreKey(timeframe) {
+  if (timeframe === "1m") return "candles1m";
+  if (timeframe === "5m") return "candles5m";
+  return timeframe;
+}
+
+function readTimeframeCandles(store, timeframe) {
+  const key = getTimeframeStoreKey(timeframe);
+  if (key === "candles1m" || key === "candles5m") {
+    return Array.isArray(store[key]) ? store[key] : [];
+  }
+  return Array.isArray(store.byTimeframe[key]) ? store.byTimeframe[key] : [];
+}
+
+function writeTimeframeCandles(store, timeframe, candles) {
+  const nextCandles = sortAndDeduplicateCandles(candles);
+  const key = getTimeframeStoreKey(timeframe);
+
+  if (key === "candles1m" || key === "candles5m") {
+    store[key] = nextCandles;
+    return nextCandles;
+  }
+
+  store.byTimeframe[key] = nextCandles;
+  return nextCandles;
+}
+
+function resetTimeframeCandleStore(store) {
+  store.candles1m = [];
+  store.candles5m = [];
+  store.byTimeframe = {};
+}
+
+function getTrackedTimeframes(activeTimeframe) {
+  return Array.from(new Set([...TRACKED_LIVE_TIMEFRAMES, activeTimeframe]));
+}
+
+const IST_TZ = "Asia/Kolkata";
+
 function formatInfoTime(unixTime, timeframe) {
   if (!Number.isFinite(Number(unixTime))) return "--";
   const date = new Date(Number(unixTime) * 1000);
   if (!Number.isFinite(date.getTime())) return "--";
-  return `${formatAxisTime(unixTime, timeframe)} | ${date.toLocaleDateString("en-GB")}`;
+  // Force IST for both the time part and the date part
+  const datePart = date.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: IST_TZ,
+  });
+  return `${formatAxisTime(unixTime, timeframe)} | ${datePart}`;
 }
 
 function updateTooltipContent({
@@ -188,7 +249,11 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
   const requestIdRef = useRef(0);
   const pendingRangeRef = useRef(null);
   const candlesRef = useRef([]);
+  const candleStoreRef = useRef(createTimeframeCandleStore());
   const lastCandleRef = useRef(null);
+  const prevCloseRef = useRef(null);  // previous day close — denominator for change %
+  const liveChangeRef = useRef(null);       // tick-provided absolute change vs prev close
+  const liveChangePctRef = useRef(null);    // tick-provided change percent vs prev close
   const timeframeRef = useRef(DEFAULT_TRADING_TIMEFRAME);
 
   const currencySymbol = useMemo(() => getCurrencySymbol(currency), [currency]);
@@ -201,7 +266,9 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
   const [error, setError] = useState("");
   const [predictionError, setPredictionError] = useState("");
   const [lastPrice, setLastPrice] = useState(null);
-  const [sessionOpenPrice, setSessionOpenPrice] = useState(null);
+  const [prevClose, setPrevClose] = useState(null);        // previous day close price
+  const [liveChange, setLiveChange] = useState(null);      // tick-sourced absolute change
+  const [liveChangePct, setLiveChangePct] = useState(null);// tick-sourced change percent
   const [lastCandleTime, setLastCandleTime] = useState(null);
   const [predictionMeta, setPredictionMeta] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -365,6 +432,7 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
       volumeSeriesRef.current = null;
       candleSeriesRef.current = null;
       chartRef.current = null;
+      resetTimeframeCandleStore(candleStoreRef.current);
       candlesRef.current = [];
       lastCandleRef.current = null;
       chart.remove();
@@ -373,6 +441,9 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
 
   useEffect(() => {
     pendingRangeRef.current = null;
+    resetTimeframeCandleStore(candleStoreRef.current);
+    candlesRef.current = [];
+    lastCandleRef.current = null;
   }, [symbol]);
 
   useEffect(() => {
@@ -430,15 +501,42 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
           throw new Error("No chart data");
         }
 
-        candleSeries.setData(candles);
-        volumeSeries.setData(candles.map(buildVolumePoint));
+        const cachedCandles = readTimeframeCandles(candleStoreRef.current, timeframe);
+        const mergedCandles = writeTimeframeCandles(candleStoreRef.current, timeframe, [
+          ...candles,
+          ...cachedCandles,
+        ]);
+
+        candleSeries.setData(mergedCandles);
+        volumeSeries.setData(mergedCandles.map(buildVolumePoint));
         predictionSeries?.setData([]);
 
-        candlesRef.current = candles;
-        lastCandleRef.current = candles[candles.length - 1];
-        setLastPrice(candles[candles.length - 1].close);
-        setSessionOpenPrice(candles[0]?.open ?? null);
-        setLastCandleTime(candles[candles.length - 1]?.time ?? null);
+        // Resolve previous close: prefer meta value, fall back to first candle open
+        const prevCloseValue = Number(
+          marketPayload?.prevClose ??
+          marketPayload?.meta?.chartPreviousClose ??
+          marketPayload?.meta?.previousClose ??
+          mergedCandles[0]?.open ??
+          0
+        );
+
+        candlesRef.current = mergedCandles;
+        lastCandleRef.current = mergedCandles[mergedCandles.length - 1];
+        prevCloseRef.current = Number.isFinite(prevCloseValue) && prevCloseValue > 0 ? prevCloseValue : null;
+        liveChangeRef.current = null;
+        liveChangePctRef.current = null;
+
+        const lastClose = mergedCandles[mergedCandles.length - 1].close;
+        const computedChange = prevCloseRef.current ? lastClose - prevCloseRef.current : null;
+        const computedChangePct = prevCloseRef.current && prevCloseRef.current !== 0
+          ? (computedChange / prevCloseRef.current) * 100
+          : null;
+
+        setLastPrice(lastClose);
+        setPrevClose(prevCloseRef.current);
+        setLiveChange(computedChange);
+        setLiveChangePct(computedChangePct);
+        setLastCandleTime(mergedCandles[mergedCandles.length - 1]?.time ?? null);
         setPredictionMeta(null);
         setPredictionLoading(false);
 
@@ -451,11 +549,17 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
         candleSeries.setData([]);
         volumeSeries.setData([]);
         predictionSeries?.setData([]);
+        writeTimeframeCandles(candleStoreRef.current, timeframe, []);
         candlesRef.current = [];
         lastCandleRef.current = null;
+        prevCloseRef.current = null;
+        liveChangeRef.current = null;
+        liveChangePctRef.current = null;
         setPredictionMeta(null);
         setLastPrice(null);
-        setSessionOpenPrice(null);
+        setPrevClose(null);
+        setLiveChange(null);
+        setLiveChangePct(null);
         setLastCandleTime(null);
         setError(ERROR_MESSAGE);
       } finally {
@@ -496,7 +600,7 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
   }, [isFullscreen]);
 
   useEffect(() => {
-    if (!tick || !candleSeriesRef.current || !volumeSeriesRef.current || !candlesRef.current.length) {
+    if (!tick || !candleSeriesRef.current || !volumeSeriesRef.current) {
       return;
     }
 
@@ -505,68 +609,145 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
       return;
     }
 
-    const now = Number(tick.time) || Math.floor(Date.now() / 1000);
-    const candleTime = getLiveCandleTime(now, timeframeRef.current);
-    if (!Number.isFinite(candleTime)) {
-      return;
-    }
-
-    const latest = lastCandleRef.current;
-    const latestTime = toComparableTime(latest?.time);
-    if (Number.isFinite(latestTime) && candleTime < latestTime) {
-      return;
-    }
-
+    // Normalize tick time: Yahoo WS sends Unix seconds; polling sends Date.now() (ms)
+    const timestampMs = normalizeTickTimestampMs(tick.time);
     const tickVolume = Number(tick.volume);
-    let nextCandle;
+    const activeTimeframe = timeframeRef.current;
+    const activeIntervalMinutes = getTimeframeIntervalMinutes(activeTimeframe);
+    const trackedTimeframes = getTrackedTimeframes(activeTimeframe);
 
-    if (latest && latest.time === candleTime) {
-      nextCandle = {
-        ...latest,
-        high: Math.max(latest.high, price),
-        low: Math.min(latest.low, price),
-        close: price,
-        volume: Number.isFinite(tickVolume)
-          ? Math.max(latest.volume || 0, tickVolume)
-          : latest.volume || 0,
-      };
-      candlesRef.current[candlesRef.current.length - 1] = nextCandle;
-    } else {
-      const open = latest?.close ?? price;
-      nextCandle = {
-        time: candleTime,
-        open,
-        high: Math.max(open, price),
-        low: Math.min(open, price),
-        close: price,
-        volume: Number.isFinite(tickVolume) ? Math.max(0, tickVolume) : 0,
-      };
-      candlesRef.current = [...candlesRef.current, nextCandle];
-    }
+    let activeUpdate = null;
 
-    lastCandleRef.current = nextCandle;
+    for (const trackedTimeframe of trackedTimeframes) {
+      const intervalMinutes = getTimeframeIntervalMinutes(trackedTimeframe);
+      if (!Number.isFinite(intervalMinutes)) {
+        continue;
+      }
 
-    try {
-      candleSeriesRef.current.update(nextCandle);
-      volumeSeriesRef.current.update(buildVolumePoint(nextCandle));
-    } catch {
-      try {
-        candleSeriesRef.current.setData(candlesRef.current);
-        volumeSeriesRef.current.setData(candlesRef.current.map(buildVolumePoint));
-      } catch {
-        return;
+      const merged = mergeTickIntoCandles({
+        candles: readTimeframeCandles(candleStoreRef.current, trackedTimeframe),
+        price,
+        timestampMs,
+        intervalMinutes,
+        intervalLabel: trackedTimeframe,
+        volume: tickVolume,
+        enableLogs: trackedTimeframe === activeTimeframe,
+      });
+
+      if (!merged.ignored) {
+        writeTimeframeCandles(candleStoreRef.current, trackedTimeframe, merged.candles);
+      }
+
+      if (trackedTimeframe === activeTimeframe) {
+        activeUpdate = merged;
       }
     }
 
+    let nextRealtimeCandle = activeUpdate?.latestCandle ?? null;
+    let activeCandles = Number.isFinite(activeIntervalMinutes)
+      ? readTimeframeCandles(candleStoreRef.current, activeTimeframe)
+      : candlesRef.current;
+
+    if (!Number.isFinite(activeIntervalMinutes)) {
+      const tickTimeSeconds = Math.floor(timestampMs / 1000);
+      const candleTime = getLiveCandleTime(tickTimeSeconds, activeTimeframe);
+      if (!Number.isFinite(candleTime)) {
+        return;
+      }
+
+      const latest = lastCandleRef.current;
+      const latestTime = toComparableTime(latest?.time);
+      if (Number.isFinite(latestTime) && candleTime < latestTime) {
+        return;
+      }
+
+      if (latest && latest.time === candleTime) {
+        nextRealtimeCandle = {
+          ...latest,
+          high: Math.max(latest.high, price),
+          low: Math.min(latest.low, price),
+          close: price,
+          volume: Number.isFinite(tickVolume)
+            ? Math.max(latest.volume || 0, tickVolume)
+            : latest.volume || 0,
+        };
+        activeCandles = [...candlesRef.current.slice(0, -1), nextRealtimeCandle];
+      } else {
+        nextRealtimeCandle = {
+          time: candleTime,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+          volume: Number.isFinite(tickVolume) ? Math.max(0, tickVolume) : 0,
+        };
+        activeCandles = [...candlesRef.current, nextRealtimeCandle];
+      }
+    }
+
+    if (!nextRealtimeCandle || activeUpdate?.ignored) {
+      return;
+    }
+
+    const latestRealtime = lastCandleRef.current;
+    const latestRealtimeTime = toComparableTime(latestRealtime?.time);
+    if (Number.isFinite(latestRealtimeTime) && nextRealtimeCandle.time < latestRealtimeTime) {
+      return;
+    }
+
+    candlesRef.current = activeCandles;
+    lastCandleRef.current = nextRealtimeCandle;
+
+    if (activeUpdate?.changed !== false || !Number.isFinite(activeIntervalMinutes)) {
+      try {
+        candleSeriesRef.current.update(nextRealtimeCandle);
+        volumeSeriesRef.current.update(buildVolumePoint(nextRealtimeCandle));
+      } catch {
+        try {
+          candleSeriesRef.current.setData(activeCandles);
+          volumeSeriesRef.current.setData(activeCandles.map(buildVolumePoint));
+        } catch {
+          return;
+        }
+      }
+    }
+
+    const tickChange = Number(tick.change);
+    const tickChangePct = Number(tick.changePercent);
+    const prevCloseVal = prevCloseRef.current;
+
+    if (Number.isFinite(tickChange) && Number.isFinite(tickChangePct)) {
+      liveChangeRef.current = tickChange;
+      liveChangePctRef.current = tickChangePct;
+      setLiveChange(tickChange);
+      setLiveChangePct(tickChangePct);
+    } else if (prevCloseVal && prevCloseVal > 0) {
+      const computedChg = price - prevCloseVal;
+      const computedChgPct = (computedChg / prevCloseVal) * 100;
+      liveChangeRef.current = computedChg;
+      liveChangePctRef.current = computedChgPct;
+      setLiveChange(computedChg);
+      setLiveChangePct(computedChgPct);
+    }
+
     setLastPrice(price);
-    setLastCandleTime(nextCandle.time);
+    setLastCandleTime(nextRealtimeCandle.time);
+    return;
   }, [tick]);
 
   const timeframeButtons = useMemo(() => Object.values(TIMEFRAME_PRESETS), []);
   const chartHeight = isFullscreen ? "calc(100vh - 170px)" : `${CHART_HEIGHT}px`;
-  const changePercent =
-    Number.isFinite(lastPrice) && Number.isFinite(sessionOpenPrice) && sessionOpenPrice !== 0
-      ? ((lastPrice - sessionOpenPrice) / sessionOpenPrice) * 100
+
+  // Use tick-native change % (vs prev close). Fall back to computing from prevClose state.
+  const changePercent = Number.isFinite(liveChangePct)
+    ? liveChangePct
+    : Number.isFinite(lastPrice) && Number.isFinite(prevClose) && prevClose > 0
+      ? ((lastPrice - prevClose) / prevClose) * 100
+      : null;
+  const changePoints = Number.isFinite(liveChange)
+    ? liveChange
+    : Number.isFinite(lastPrice) && Number.isFinite(prevClose) && prevClose > 0
+      ? lastPrice - prevClose
       : null;
   const changeColor = !Number.isFinite(changePercent)
     ? "#7b8ba7"
@@ -746,10 +927,12 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
           >
             <span>Last: {formatPrice(lastPrice, currencySymbol)}</span>
             <span style={{ color: changeColor, fontWeight: 700 }}>
-              {formatSignedPercent(changePercent)}
+              {Number.isFinite(changePoints)
+                ? `${changePoints >= 0 ? "+" : ""}${changePoints.toFixed(2)} (${formatSignedPercent(changePercent)})`
+                : "--"}
             </span>
             <span>{formatInfoTime(lastCandleTime, timeframe)}</span>
-            <span>{candlesRef.current.length} pts</span>
+            <span style={{ color: "#3d4f69" }}>{candlesRef.current.length} bars</span>
           </div>
         </div>
 
