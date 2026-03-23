@@ -10,6 +10,7 @@ import { getCurrencySymbol } from "../utils/formatters";
 import { useSocket } from "../hooks/useSocket";
 import { useRealtimeChart } from "../hooks/useRealtimeChart";
 import { usePrediction } from "../hooks/usePrediction";
+import { sortAndDeduplicateCandles } from "../utils/liveCandles";
 
 const INTERVALS = [
   { key: "1m", label: "1min", ranges: [{ key: "1d", label: "1D" }] },
@@ -235,10 +236,53 @@ function resolvePredictionTimeframe(intervalKey) {
   return TIMEFRAME_MAP[intervalKey] || DEFAULT_PREDICTION_TIMEFRAME;
 }
 
+function normalizeChartTimeValue(rawTime) {
+  if (typeof rawTime === "number") {
+    if (!Number.isFinite(rawTime)) return null;
+    return rawTime > 1e12 ? Math.floor(rawTime / 1000) : Math.floor(rawTime);
+  }
+
+  if (typeof rawTime === "string") {
+    const trimmed = rawTime.trim();
+    if (!trimmed) return null;
+
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      const numeric = Number(trimmed);
+      if (!Number.isFinite(numeric)) return null;
+      return numeric > 1e12 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    const parsedMs = Date.parse(trimmed);
+    return Number.isFinite(parsedMs) ? Math.floor(parsedMs / 1000) : null;
+  }
+
+  return null;
+}
+
+function getChartTimeDate(rawTime) {
+  const normalized = normalizeChartTimeValue(rawTime);
+
+  if (typeof normalized === "string") {
+    const parsed = new Date(`${normalized}T00:00:00`);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+
+  if (typeof normalized === "number") {
+    const parsed = new Date(normalized * 1000);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+
+  return null;
+}
+
 function normalizeChartCandle(candle) {
   if (!candle) return null;
 
-  const time = typeof candle.time === "number" || typeof candle.time === "string" ? candle.time : null;
+  const time = normalizeChartTimeValue(candle.time);
   const open = Number(candle.open);
   const high = Number(candle.high);
   const low = Number(candle.low);
@@ -271,8 +315,8 @@ function normalizeChartCandles(candles) {
 }
 
 function formatChartTime(value, intraday) {
-  const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
-  if (!Number.isFinite(date.getTime())) return "";
+  const date = getChartTimeDate(value);
+  if (!date || !Number.isFinite(date.getTime())) return "";
   if (intraday) {
     return date.toLocaleTimeString([], {
       hour: "2-digit",
@@ -284,6 +328,31 @@ function formatChartTime(value, intraday) {
     year: "numeric",
     month: "short",
     day: "2-digit",
+  });
+}
+
+function formatChartInfoTimestamp(value, intraday) {
+  const date = getChartTimeDate(value);
+  if (!date) return "";
+
+  if (intraday) {
+    const timeLabel = date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const dayLabel = date.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+    return `${timeLabel} | ${dayLabel}`;
+  }
+
+  return date.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
   });
 }
 
@@ -626,6 +695,16 @@ const CandleChart = memo(({ symbol, currency }) => {
       if (prev && prev.price === data.price && prev.changePercent === data.changePercent) return prev;
       return data;
     });
+
+    setChartInfo((prev) => {
+      if (!prev) return prev;
+      const nextPrice = Number(data.price);
+      return {
+        ...prev,
+        lastClose: Number.isFinite(nextPrice) ? nextPrice.toFixed(2) : prev.lastClose,
+        lastDate: formatChartInfoTimestamp(data.time, true) || prev.lastDate,
+      };
+    });
   }, []);
 
   // Bridge ticks to chart (includes live candle merge with prediction overlay)
@@ -872,14 +951,11 @@ const CandleChart = memo(({ symbol, currency }) => {
             });
 
         if (candles.length > 0) {
-          const formatted = candles.map((c) => ({
-            time: typeof c.time === "number" ? c.time : c.time,
-            open: +c.open, high: +c.high, low: +c.low, close: +c.close,
-          }));
-          const volumes = candles.map((c) => ({
-            time: typeof c.time === "number" ? c.time : c.time,
+          const formatted = normalizeChartCandles(candles);
+          const volumes = formatted.map((c) => ({
+            time: c.time,
             value: c.volume || 0,
-            color: +c.close >= +c.open ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+            color: c.close >= c.open ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
           }));
 
           candleSeries.setData(formatted);
@@ -888,18 +964,13 @@ const CandleChart = memo(({ symbol, currency }) => {
           predictedCandlesRef.current = [];
           chart.timeScale().fitContent();
 
-          const last = candles[candles.length - 1];
-          const lastTime = typeof last.time === "number"
-            ? new Date(last.time * 1000).toLocaleString([], {
-              year: 'numeric', month: 'numeric', day: 'numeric',
-              hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
-            })
-            : last.time;
+          const last = formatted[formatted.length - 1];
+          const lastTime = formatChartInfoTimestamp(last?.time, INTRADAY_INTERVAL_KEYS.has(interval)) || "-";
 
           setChartInfo({
             lastDate: lastTime,
             lastClose: (+last.close).toFixed(2),
-            dataPoints: candles.length,
+            dataPoints: formatted.length,
             intervalLabel: activeInterval.label,
             currencySymbol: getCurrencySymbol(currency),
           });
@@ -966,23 +1037,24 @@ const CandleChart = memo(({ symbol, currency }) => {
             });
         if (!candles.length) return;
 
-        const formatted = candles.map((c) => ({
-          time: typeof c.time === "number" ? c.time : c.time,
-          open: +c.open, high: +c.high, low: +c.low, close: +c.close,
-        }));
-        const volumes = candles.map((c) => ({
-          time: typeof c.time === "number" ? c.time : c.time,
+        const refreshed = normalizeChartCandles(candles);
+        const merged = sortAndDeduplicateCandles([
+          ...refreshed,
+          ...realCandlesRef.current,
+        ]);
+        const volumes = merged.map((c) => ({
+          time: c.time,
           value: c.volume || 0,
-          color: +c.close >= +c.open ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+          color: c.close >= c.open ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
         }));
 
         // Use requestAnimationFrame to batch DOM updates and avoid mid-frame jank
         requestAnimationFrame(() => {
           if (!active) return;
           try {
-            if (candleSeriesRef.current) candleSeriesRef.current.setData(formatted);
+            if (candleSeriesRef.current) candleSeriesRef.current.setData(merged);
             if (volumeSeriesRef.current) volumeSeriesRef.current.setData(volumes);
-            realCandlesRef.current = formatted;
+            realCandlesRef.current = merged;
           } catch { /* chart may have been disposed */ }
         });
       } catch { /* silent — will retry next cycle */ }
