@@ -274,7 +274,7 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const { tick, connected } = useSocket(symbol);
+  const { tick, live } = useSocket(symbol);
 
   useEffect(() => {
     timeframeRef.current = timeframe;
@@ -492,6 +492,22 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
           interval: preset.apiInterval,
         });
 
+        if (import.meta.env.DEV) {
+          const rawCandles = Array.isArray(marketPayload)
+            ? marketPayload
+            : Array.isArray(marketPayload?.candles)
+              ? marketPayload.candles
+              : Array.isArray(marketPayload?.history)
+                ? marketPayload.history
+                : [];
+          console.debug("[TradingChart] load raw timestamps", {
+            symbol,
+            timeframe,
+            count: rawCandles.length,
+            sample: rawCandles.slice(0, 5).map((item) => item?.time ?? item?.timestamp ?? null),
+          });
+        }
+
         if (disposed || requestIdRef.current !== currentRequestId) {
           return;
         }
@@ -503,8 +519,8 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
 
         const cachedCandles = readTimeframeCandles(candleStoreRef.current, timeframe);
         const mergedCandles = writeTimeframeCandles(candleStoreRef.current, timeframe, [
-          ...candles,
           ...cachedCandles,
+          ...candles,
         ]);
 
         candleSeries.setData(mergedCandles);
@@ -575,6 +591,73 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
       disposed = true;
     };
   }, [symbol, timeframe, reloadKey]);
+
+  useEffect(() => {
+    if (!symbol || !candleSeriesRef.current || !volumeSeriesRef.current) {
+      return;
+    }
+
+    if (live) {
+      return undefined;
+    }
+
+    let active = true;
+
+    const refresh = async () => {
+      const preset = getTimeframePreset(timeframeRef.current);
+
+      try {
+        const marketPayload = await stockService.getTradingChart(symbol, {
+          range: preset.range,
+          interval: preset.apiInterval,
+        });
+        if (!active) return;
+
+        const refreshed = transformMarketDataToCandles(marketPayload, timeframeRef.current);
+        if (!refreshed.length) return;
+
+        if (import.meta.env.DEV) {
+          const rawCandles = Array.isArray(marketPayload)
+            ? marketPayload
+            : Array.isArray(marketPayload?.candles)
+              ? marketPayload.candles
+              : Array.isArray(marketPayload?.history)
+                ? marketPayload.history
+                : [];
+          console.debug("[TradingChart] poll raw timestamps", {
+            symbol,
+            timeframe: timeframeRef.current,
+            count: rawCandles.length,
+            sample: rawCandles.slice(0, 5).map((item) => item?.time ?? item?.timestamp ?? null),
+          });
+        }
+
+        const merged = writeTimeframeCandles(candleStoreRef.current, timeframeRef.current, [
+          ...readTimeframeCandles(candleStoreRef.current, timeframeRef.current),
+          ...refreshed,
+        ]);
+
+        if (!merged.length) return;
+
+        candleSeriesRef.current.setData(merged);
+        volumeSeriesRef.current.setData(merged.map(buildVolumePoint));
+        candlesRef.current = merged;
+        lastCandleRef.current = merged[merged.length - 1];
+
+        const lastClose = merged[merged.length - 1].close;
+        setLastPrice(lastClose);
+        setLastCandleTime(merged[merged.length - 1].time);
+      } catch {
+        // silent polling retry
+      }
+    };
+
+    const timer = window.setInterval(refresh, 5000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [symbol, timeframe, live]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -885,35 +968,35 @@ const TradingChart = memo(function TradingChart({ symbol, currency = "INR" }) {
             >
               {symbol} Price Action
             </h3>
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "3px 10px",
-                borderRadius: "8px",
-                background: connected ? "rgba(22, 214, 161, 0.08)" : "rgba(255, 77, 87, 0.08)",
-                border: connected
-                  ? "1px solid rgba(22, 214, 161, 0.16)"
-                  : "1px solid rgba(255, 77, 87, 0.16)",
-                color: connected ? ACCENT_GREEN : "#ff8c93",
-                fontSize: "10px",
-                fontWeight: 700,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-              }}
-            >
+            {live && (
               <span
                 style={{
-                  width: "8px",
-                  height: "8px",
-                  borderRadius: "50%",
-                  background: connected ? ACCENT_GREEN : ACCENT_RED,
-                  boxShadow: connected ? "0 0 10px rgba(22, 214, 161, 0.5)" : "none",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "3px 10px",
+                  borderRadius: "8px",
+                  background: "rgba(22, 214, 161, 0.08)",
+                  border: "1px solid rgba(22, 214, 161, 0.16)",
+                  color: ACCENT_GREEN,
+                  fontSize: "10px",
+                  fontWeight: 700,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
                 }}
-              />
-              {connected ? "live" : "delayed"}
-            </span>
+              >
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    borderRadius: "50%",
+                    background: ACCENT_GREEN,
+                    boxShadow: "0 0 10px rgba(22, 214, 161, 0.5)",
+                  }}
+                />
+                LIVE
+              </span>
+            )}
           </div>
 
           <div

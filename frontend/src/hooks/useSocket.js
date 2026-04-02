@@ -7,6 +7,7 @@ function resolveSocketUrl() {
 }
 
 const SOCKET_URL = resolveSocketUrl();
+const LIVE_TICK_STALE_MS = 15000;
 
 let sharedSocket = null;
 let refCount = 0;
@@ -59,18 +60,46 @@ export function useSocket(symbol) {
     const socketRef = useRef(null);
     const [tick, setTick] = useState(null);
     const [connected, setConnected] = useState(() => Boolean(sharedSocket?.connected));
+    const [live, setLive] = useState(false);
+    const [streamInfo, setStreamInfo] = useState({
+        provider: null,
+        transport: null,
+        fallback: false,
+    });
     const currentSymbol = useRef(null);
     const pendingTickRef = useRef(null);
     const tickRafRef = useRef(null);
     const resetTickFrameRef = useRef(null);
+    const lastLiveTickAtRef = useRef(0);
 
     useEffect(() => {
         const socket = getSocket();
         socketRef.current = socket;
 
-        const onConnect = () => setConnected(true);
-        const onDisconnect = () => setConnected(false);
+        const onConnect = () => {
+            setConnected(true);
+            if (currentSymbol.current) {
+                socket.emit("subscribe", currentSymbol.current);
+            }
+        };
+        const onDisconnect = () => {
+            setConnected(false);
+            setLive(false);
+        };
         const onTick = (data) => {
+            const transport = String(data?.streamTransport || "").trim().toLowerCase();
+            const isLiveStream = transport === "websocket" && data?.isLive !== false;
+
+            if (isLiveStream) {
+                lastLiveTickAtRef.current = Date.now();
+            }
+
+            setLive(isLiveStream);
+            setStreamInfo({
+                provider: data?.streamProvider || null,
+                transport: transport || null,
+                fallback: !isLiveStream,
+            });
             pendingTickRef.current = data;
 
             // Batch frequent socket ticks to one state update per animation frame.
@@ -82,7 +111,15 @@ export function useSocket(symbol) {
                     if (!nextTick) return;
 
                     setTick((prev) => {
-                        if (prev && prev.price === nextTick.price && prev.symbol === nextTick.symbol) return prev;
+                        if (
+                            prev &&
+                            prev.price === nextTick.price &&
+                            prev.symbol === nextTick.symbol &&
+                            prev.time === nextTick.time &&
+                            prev.volume === nextTick.volume
+                        ) {
+                            return prev;
+                        }
                         return nextTick;
                     });
                 });
@@ -97,10 +134,21 @@ export function useSocket(symbol) {
             requestAnimationFrame(() => setConnected(true));
         }
 
+        const staleTimer = window.setInterval(() => {
+            if (!lastLiveTickAtRef.current) {
+                return;
+            }
+
+            if (Date.now() - lastLiveTickAtRef.current > LIVE_TICK_STALE_MS) {
+                setLive(false);
+            }
+        }, 2000);
+
         return () => {
             socket.off("connect", onConnect);
             socket.off("disconnect", onDisconnect);
             socket.off("tick", onTick);
+            window.clearInterval(staleTimer);
             if (tickRafRef.current) {
                 cancelAnimationFrame(tickRafRef.current);
                 tickRafRef.current = null;
@@ -114,6 +162,7 @@ export function useSocket(symbol) {
                 socket.emit("unsubscribe", currentSymbol.current);
                 currentSymbol.current = null;
             }
+            lastLiveTickAtRef.current = 0;
             releaseSocket();
         };
     }, []);
@@ -122,22 +171,47 @@ export function useSocket(symbol) {
         const socket = socketRef.current;
         if (!socket) return;
 
-        if (currentSymbol.current && currentSymbol.current !== symbol) {
+        const nextSymbol = symbol ? normalizeSocketSymbol(symbol) : "";
+
+        if (currentSymbol.current && currentSymbol.current !== nextSymbol) {
             socket.emit("unsubscribe", currentSymbol.current);
+            currentSymbol.current = null;
         }
 
-        if (symbol) {
-            const yahooSymbol = normalizeSocketSymbol(symbol);
-            socket.emit("subscribe", yahooSymbol);
-            currentSymbol.current = yahooSymbol;
+        if (!nextSymbol) {
             if (resetTickFrameRef.current) {
                 cancelAnimationFrame(resetTickFrameRef.current);
             }
             resetTickFrameRef.current = requestAnimationFrame(() => {
                 resetTickFrameRef.current = null;
+                lastLiveTickAtRef.current = 0;
                 setTick(null);
+                setLive(false);
+                setStreamInfo({
+                    provider: null,
+                    transport: null,
+                    fallback: false,
+                });
             });
+            return;
         }
+
+        socket.emit("subscribe", nextSymbol);
+        currentSymbol.current = nextSymbol;
+        if (resetTickFrameRef.current) {
+            cancelAnimationFrame(resetTickFrameRef.current);
+        }
+        resetTickFrameRef.current = requestAnimationFrame(() => {
+            resetTickFrameRef.current = null;
+            lastLiveTickAtRef.current = 0;
+            setTick(null);
+            setLive(false);
+            setStreamInfo({
+                provider: null,
+                transport: null,
+                fallback: false,
+            });
+        });
     }, [symbol]);
 
     const subscribe = useCallback((sym) => {
@@ -154,7 +228,7 @@ export function useSocket(symbol) {
         }
     }, []);
 
-    return { tick, connected, subscribe, unsubscribe };
+    return { tick, connected, live, streamInfo, subscribe, unsubscribe };
 }
 
 export default useSocket;

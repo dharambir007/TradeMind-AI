@@ -52,6 +52,8 @@ const INTRADAY_INTERVAL_KEYS = new Set(
 const warnedInvalidChartIntervals = new Set();
 const datePartsFormatterByTz = new Map();
 const weekdayFormatterByTz = new Map();
+const MIN_VALID_UNIX_SECONDS = 946684800; // 2000-01-01
+const MAX_FUTURE_UNIX_SECONDS_DRIFT = 24 * 60 * 60;
 
 function normalizeIntervalKey(rawInterval, source = "unknown") {
   const key = typeof rawInterval === "string"
@@ -236,10 +238,29 @@ function resolvePredictionTimeframe(intervalKey) {
   return TIMEFRAME_MAP[intervalKey] || DEFAULT_PREDICTION_TIMEFRAME;
 }
 
+function sanitizeChartUnixSeconds(seconds) {
+  if (!Number.isFinite(seconds)) return null;
+  const normalized = Math.floor(seconds);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (normalized < MIN_VALID_UNIX_SECONDS) return null;
+  if (normalized > nowSeconds + MAX_FUTURE_UNIX_SECONDS_DRIFT) return null;
+  return normalized;
+}
+
+function isFutureBusinessDate(rawDate) {
+  if (typeof rawDate !== "string") return false;
+  const parsed = Date.parse(`${rawDate}T00:00:00Z`);
+  if (!Number.isFinite(parsed)) return true;
+  const now = new Date();
+  const tomorrowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return parsed > tomorrowUtc;
+}
+
 function normalizeChartTimeValue(rawTime) {
   if (typeof rawTime === "number") {
     if (!Number.isFinite(rawTime)) return null;
-    return rawTime > 1e12 ? Math.floor(rawTime / 1000) : Math.floor(rawTime);
+    const seconds = rawTime > 1e12 ? rawTime / 1000 : rawTime;
+    return sanitizeChartUnixSeconds(seconds);
   }
 
   if (typeof rawTime === "string") {
@@ -249,15 +270,16 @@ function normalizeChartTimeValue(rawTime) {
     if (/^\d+(\.\d+)?$/.test(trimmed)) {
       const numeric = Number(trimmed);
       if (!Number.isFinite(numeric)) return null;
-      return numeric > 1e12 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+      const seconds = numeric > 1e12 ? numeric / 1000 : numeric;
+      return sanitizeChartUnixSeconds(seconds);
     }
 
     if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-      return trimmed;
+      return isFutureBusinessDate(trimmed) ? null : trimmed;
     }
 
     const parsedMs = Date.parse(trimmed);
-    return Number.isFinite(parsedMs) ? Math.floor(parsedMs / 1000) : null;
+    return Number.isFinite(parsedMs) ? sanitizeChartUnixSeconds(parsedMs / 1000) : null;
   }
 
   return null;
@@ -305,29 +327,47 @@ function normalizeChartCandle(candle) {
 
 function normalizeChartCandles(candles) {
   if (!Array.isArray(candles)) return [];
-  return candles
+  const sorted = candles
     .map(normalizeChartCandle)
     .filter(Boolean)
     .sort((a, b) => {
       if (typeof a.time === "number" && typeof b.time === "number") return a.time - b.time;
       return String(a.time).localeCompare(String(b.time));
     });
+
+  const deduplicated = [];
+  for (const candle of sorted) {
+    const previous = deduplicated[deduplicated.length - 1];
+    if (!previous || previous.time !== candle.time) {
+      deduplicated.push(candle);
+      continue;
+    }
+
+    previous.high = Math.max(previous.high, candle.high);
+    previous.low = Math.min(previous.low, candle.low);
+    previous.close = candle.close;
+    previous.volume = Math.max(Number(previous.volume || 0), Number(candle.volume || 0));
+  }
+
+  return deduplicated;
 }
 
 function formatChartTime(value, intraday) {
   const date = getChartTimeDate(value);
   if (!date || !Number.isFinite(date.getTime())) return "";
   if (intraday) {
-    return date.toLocaleTimeString([], {
+    return date.toLocaleTimeString("en-IN", {
       hour: "2-digit",
       minute: "2-digit",
-      hour12: true,
+      hour12: false,
+      timeZone: MARKET_TIME_ZONE,
     });
   }
-  return date.toLocaleDateString([], {
+  return date.toLocaleDateString("en-IN", {
     year: "numeric",
     month: "short",
     day: "2-digit",
+    timeZone: MARKET_TIME_ZONE,
   });
 }
 
@@ -336,23 +376,26 @@ function formatChartInfoTimestamp(value, intraday) {
   if (!date) return "";
 
   if (intraday) {
-    const timeLabel = date.toLocaleTimeString([], {
+    const timeLabel = date.toLocaleTimeString("en-IN", {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
+      timeZone: MARKET_TIME_ZONE,
     });
-    const dayLabel = date.toLocaleDateString("en-GB", {
+    const dayLabel = date.toLocaleDateString("en-IN", {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
+      timeZone: MARKET_TIME_ZONE,
     });
     return `${timeLabel} | ${dayLabel}`;
   }
 
-  return date.toLocaleDateString("en-GB", {
+  return date.toLocaleDateString("en-IN", {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
+    timeZone: MARKET_TIME_ZONE,
   });
 }
 
@@ -506,7 +549,7 @@ const CandleChart = memo(({ symbol, currency }) => {
   } = usePrediction(symbol);
 
   // WebSocket integration
-  const { tick, connected } = useSocket(symbol);
+  const { tick, live } = useSocket(symbol);
 
   // sync prediction overlay series
   const syncPredictionSeries = useCallback(() => {
@@ -939,6 +982,15 @@ const CandleChart = memo(({ symbol, currency }) => {
         if (!active) return;
 
         const rawCandles = Array.isArray(res.data) ? res.data : [];
+        if (import.meta.env.DEV) {
+          console.debug("[CandleChart] loadHistory raw timestamps", {
+            symbol,
+            interval,
+            range,
+            count: rawCandles.length,
+            sample: rawCandles.slice(0, 5).map((item) => item?.time ?? item?.timestamp ?? null),
+          });
+        }
         // Backend already filters intraday candles to the correct session.
         // Only apply the frontend session filter for daily/weekly data that
         // arrives as date-strings (not Unix timestamps).
@@ -1004,11 +1056,12 @@ const CandleChart = memo(({ symbol, currency }) => {
     };
   }, [symbol, interval, range]);
 
-  // Periodic refresh: re-fetch chart data every 60s for intraday intervals
-  // Uses a longer interval and guards against concurrent updates to prevent jank
+  // Periodic refresh: re-fetch chart data every 5s for intraday intervals
+  // Frequent refresh keeps chart aligned when websocket ticks are delayed/dropped.
   useEffect(() => {
     const isIntradayInterval = INTRADAY_INTERVAL_KEYS.has(interval);
     if (!symbol || !isIntradayInterval) return;
+    if (live) return undefined;
 
     let active = true;
 
@@ -1028,6 +1081,15 @@ const CandleChart = memo(({ symbol, currency }) => {
         // Handle {success:false} response from backend
         if (res.data && res.data.success === false) return;
         const rawCandles = Array.isArray(res.data) ? res.data : [];
+        if (import.meta.env.DEV) {
+          console.debug("[CandleChart] refresh raw timestamps", {
+            symbol,
+            interval,
+            range,
+            count: rawCandles.length,
+            sample: rawCandles.slice(0, 5).map((item) => item?.time ?? item?.timestamp ?? null),
+          });
+        }
         const backendAlreadyFiltered =
           rawCandles.length > 0 && typeof rawCandles[0].time === "number";
         const candles = backendAlreadyFiltered
@@ -1039,8 +1101,8 @@ const CandleChart = memo(({ symbol, currency }) => {
 
         const refreshed = normalizeChartCandles(candles);
         const merged = sortAndDeduplicateCandles([
-          ...refreshed,
           ...realCandlesRef.current,
+          ...refreshed,
         ]);
         const volumes = merged.map((c) => ({
           time: c.time,
@@ -1055,17 +1117,29 @@ const CandleChart = memo(({ symbol, currency }) => {
             if (candleSeriesRef.current) candleSeriesRef.current.setData(merged);
             if (volumeSeriesRef.current) volumeSeriesRef.current.setData(volumes);
             realCandlesRef.current = merged;
+            const last = merged[merged.length - 1];
+            if (last) {
+              setChartInfo((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  lastClose: Number(last.close).toFixed(2),
+                  lastDate: formatChartInfoTimestamp(last.time, INTRADAY_INTERVAL_KEYS.has(interval)) || prev.lastDate,
+                  dataPoints: merged.length,
+                };
+              });
+            }
           } catch { /* chart may have been disposed */ }
         });
       } catch { /* silent — will retry next cycle */ }
     };
 
-    const timer = window.setInterval(refresh, 60000); // every 60 seconds
+    const timer = window.setInterval(refresh, 5000);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [symbol, interval, range]);
+  }, [symbol, interval, range, live]);
 
   // Prediction info derived state
   const predInfo = prediction?.predictionMeta ? (() => {
@@ -1165,7 +1239,7 @@ const CandleChart = memo(({ symbol, currency }) => {
               {symbol} Price Action
             </h4>
             {/* Live indicator */}
-            {connected && !loading && (
+            {live && !loading && (
               <span style={{
                 display: "inline-flex", alignItems: "center", gap: "4px",
                 fontSize: "9px", fontWeight: 700, letterSpacing: "0.06em",

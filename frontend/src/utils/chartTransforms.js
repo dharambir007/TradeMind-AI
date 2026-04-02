@@ -59,6 +59,9 @@ export const TIMEFRAME_PRESETS = Object.freeze({
 
 export const DEFAULT_TRADING_TIMEFRAME = "5m";
 
+const MIN_VALID_UNIX_SECONDS = 946684800; // 2000-01-01
+const MAX_FUTURE_DRIFT_SECONDS = 24 * 60 * 60;
+
 export function getTimeframePreset(timeframe) {
   return TIMEFRAME_PRESETS[timeframe] || TIMEFRAME_PRESETS[DEFAULT_TRADING_TIMEFRAME];
 }
@@ -67,26 +70,36 @@ function roundToTwo(value) {
   return Number(Number(value || 0).toFixed(2));
 }
 
+function normalizeUnixSeconds(seconds) {
+  if (!Number.isFinite(seconds)) return null;
+  const normalized = Math.floor(seconds);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (normalized < MIN_VALID_UNIX_SECONDS) return null;
+  if (normalized > nowSeconds + MAX_FUTURE_DRIFT_SECONDS) return null;
+  return normalized;
+}
+
 function toUnixTime(value) {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) return null;
-    return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value);
+    const seconds = value > 1e12 ? value / 1000 : value;
+    return normalizeUnixSeconds(seconds);
   }
 
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return null;
 
-    if (/^\d+$/.test(trimmed)) {
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
       return toUnixTime(Number(trimmed));
     }
 
     const parsed = Date.parse(trimmed);
-    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+    return Number.isFinite(parsed) ? normalizeUnixSeconds(parsed / 1000) : null;
   }
 
   if (value instanceof Date) {
-    return Math.floor(value.getTime() / 1000);
+    return normalizeUnixSeconds(value.getTime() / 1000);
   }
 
   return null;
@@ -221,6 +234,14 @@ export function transformMarketDataToCandles(payload, timeframe = DEFAULT_TRADIN
   let candles = [];
 
   if (sourceCandles.length) {
+    if (import.meta.env.DEV) {
+      console.debug("[chartTransforms] raw market timestamps", {
+        timeframe,
+        sample: sourceCandles.slice(0, 5).map((item) => item?.time ?? item?.timestamp ?? null),
+        count: sourceCandles.length,
+      });
+    }
+
     let previousClose = null;
     candles = sourceCandles
       .map((item) => {
@@ -238,6 +259,15 @@ export function transformMarketDataToCandles(payload, timeframe = DEFAULT_TRADIN
 
   if (!candles.length) {
     return [];
+  }
+
+  if (import.meta.env.DEV) {
+    console.debug("[chartTransforms] normalized market candles", {
+      timeframe,
+      count: candles.length,
+      first: candles[0]?.time ?? null,
+      last: candles[candles.length - 1]?.time ?? null,
+    });
   }
 
   if (preset.bucketSeconds && preset.apiInterval !== preset.key) {

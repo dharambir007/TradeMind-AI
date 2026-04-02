@@ -2,12 +2,29 @@ export function getCandleBucket(timestamp, intervalMinutes) {
   return Math.floor(timestamp / (intervalMinutes * 60 * 1000)) * (intervalMinutes * 60 * 1000);
 }
 
+const MAX_FUTURE_TICK_DRIFT_MS = 10 * 60 * 1000;
+
+function sanitizeTimestampMs(timestampMs) {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return Date.now();
+  }
+
+  const normalized = Math.floor(timestampMs);
+  const nowMs = Date.now();
+  if (normalized > nowMs + MAX_FUTURE_TICK_DRIFT_MS) {
+    return nowMs;
+  }
+
+  return normalized;
+}
+
 export function normalizeTickTimestampMs(rawTimestamp) {
   if (typeof rawTimestamp === "number") {
     if (!Number.isFinite(rawTimestamp) || rawTimestamp <= 0) {
       return Date.now();
     }
-    return rawTimestamp > 1e12 ? Math.floor(rawTimestamp) : Math.floor(rawTimestamp * 1000);
+    const timestampMs = rawTimestamp > 1e12 ? rawTimestamp : rawTimestamp * 1000;
+    return sanitizeTimestampMs(timestampMs);
   }
 
   if (typeof rawTimestamp === "string") {
@@ -26,7 +43,7 @@ export function normalizeTickTimestampMs(rawTimestamp) {
 
   if (rawTimestamp instanceof Date) {
     const timestampMs = rawTimestamp.getTime();
-    return Number.isFinite(timestampMs) ? timestampMs : Date.now();
+    return Number.isFinite(timestampMs) ? sanitizeTimestampMs(timestampMs) : Date.now();
   }
 
   return Date.now();
@@ -62,6 +79,10 @@ function normalizeLiveCandle(candidate) {
   }
 
   const time = rawTime > 1e12 ? Math.floor(rawTime / 1000) : Math.floor(rawTime);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (time <= 0 || time > nowSeconds + 24 * 60 * 60) {
+    return null;
+  }
 
   return {
     time,
