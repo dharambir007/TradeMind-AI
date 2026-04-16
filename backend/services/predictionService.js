@@ -209,6 +209,96 @@ async function callMl(path, payload) {
   return response.data;
 }
 
+function buildMlPredictionPayload({ symbol, candles, horizon }) {
+  const safeCandles = Array.isArray(candles) ? candles : [];
+
+  return {
+    symbol,
+    candles: safeCandles,
+    data: safeCandles,
+    horizon: Math.max(Number(horizon) || 5, 1),
+    features: safeCandles.map((item) => Number(item.close) || 0),
+  };
+}
+
+function shouldFallbackToSinglePrediction(error) {
+  const status = Number(error?.response?.status || 0);
+  return status >= 400 && status < 500;
+}
+
+function normalizeMlSinglePrediction(response, currentPriceInput) {
+  const legacyPrediction =
+    response?.prediction && typeof response.prediction === "object"
+      ? response.prediction
+      : null;
+
+  const currentPrice = round2(
+    Number(legacyPrediction?.current_price) || Number(currentPriceInput) || 0
+  );
+  const predictedReturn = legacyPrediction
+    ? Number(legacyPrediction.predicted_return_pct) / 100
+    : Number(response?.prediction);
+  const safePredictedReturn = Number.isFinite(predictedReturn) ? predictedReturn : 0;
+  const rawTargetPrice = legacyPrediction
+    ? Number(legacyPrediction.predicted_price)
+    : currentPrice * (1 + safePredictedReturn);
+  const targetPrice = round2(
+    Number.isFinite(rawTargetPrice) && rawTargetPrice > 0 ? rawTargetPrice : currentPrice
+  );
+  const direction = String(
+    response?.direction ||
+      legacyPrediction?.direction ||
+      (safePredictedReturn >= 0 ? "UP" : "DOWN")
+  ).toUpperCase();
+
+  return {
+    currentPrice,
+    targetPrice,
+    direction,
+    confidence: normalizeConfidence(response?.probability ?? legacyPrediction?.confidence),
+    processingTimeMs: Number(response?.processing_time_ms) || 0,
+  };
+}
+
+function buildChartPredictionResult({
+  symbol,
+  timeframe,
+  historicalData,
+  predictionCandles,
+  intervalSeconds,
+  direction,
+  confidence,
+  currentPrice,
+  targetPrice,
+  processingTimeMs,
+  steps,
+}) {
+  const predictedData = buildPredictedDataForTimeframe({
+    predictionCandles,
+    historicalData,
+    intervalSeconds,
+    direction,
+    currentPrice,
+  }).slice(0, steps);
+
+  return {
+    success: true,
+    symbol,
+    timeframe,
+    historicalData,
+    predictedData,
+    predictionMeta: {
+      direction: String(direction || getDirectionFromCandles(historicalData)).toUpperCase(),
+      confidence: normalizeConfidence(confidence),
+      currentPrice: round2(currentPrice),
+      targetPrice: round2(targetPrice),
+      processingTimeMs: Number(processingTimeMs) || 0,
+      steps: predictedData.length,
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
 class PredictionService {
   static async getPrediction(symbolInput) {
     const symbol = normalizeSymbol(symbolInput);
@@ -234,30 +324,26 @@ class PredictionService {
     }));
 
     try {
-      const mlResponse = await callMl("/predict", {
-        symbol,
-        candles: recentCandles,
-        horizon: 5,
-        features: recentCandles.map((item) => item.close),
-      });
-
-      const currentPrice = Number(recentCandles[recentCandles.length - 1]?.close) || 0;
-      const predictedReturn = Number(mlResponse.prediction) || 0;
-      const targetPrice = round2(currentPrice * (1 + predictedReturn));
-      const direction = String(mlResponse.direction || getDirectionFromCandles(recentCandles)).toUpperCase();
-      const confidence = Number(mlResponse.probability) || 0;
+      const mlResponse = await callMl(
+        "/predict",
+        buildMlPredictionPayload({ symbol, candles: recentCandles, horizon: 5 })
+      );
+      const normalized = normalizeMlSinglePrediction(
+        mlResponse,
+        recentCandles[recentCandles.length - 1]?.close
+      );
 
       const result = {
         success: true,
         symbol,
-        prediction_price: targetPrice,
-        trend: direction === "UP" ? "up" : "down",
-        confidence,
-        direction,
-        probability: confidence,
-        current_price: round2(currentPrice),
-        target_price: targetPrice,
-        processing_time_ms: Number(mlResponse.processing_time_ms) || 0,
+        prediction_price: normalized.targetPrice,
+        trend: normalized.direction === "UP" ? "up" : "down",
+        confidence: normalized.confidence,
+        direction: normalized.direction,
+        probability: normalized.confidence,
+        current_price: normalized.currentPrice,
+        target_price: normalized.targetPrice,
+        processing_time_ms: normalized.processingTimeMs,
         timestamp: new Date().toISOString(),
       };
 
@@ -320,40 +406,65 @@ class PredictionService {
     }));
 
     try {
-      const mlResponse = await callMl("/predict-candles", {
-        symbol,
-        candles: recentCandles,
-        steps,
-        timeframe,
-        interval_seconds: intervalSeconds,
-        pullback_probability: clamp(Number(options.pullbackProbability) || 0.35, 0.2, 0.6),
-        volatility_scale: clamp(Number(options.volatilityScale) || 1, 0.6, 1.8),
-      });
+      let result;
 
-      const predictedData = buildPredictedDataForTimeframe({
-        predictionCandles: mlResponse.predicted_candles || [],
-        historicalData,
-        intervalSeconds,
-        direction: mlResponse.direction,
-        currentPrice: mlResponse.current_price,
-      }).slice(0, steps);
+      try {
+        const mlResponse = await callMl("/predict-candles", {
+          symbol,
+          candles: recentCandles,
+          data: recentCandles,
+          steps,
+          timeframe,
+          interval_seconds: intervalSeconds,
+          pullback_probability: clamp(Number(options.pullbackProbability) || 0.35, 0.2, 0.6),
+          volatility_scale: clamp(Number(options.volatilityScale) || 1, 0.6, 1.8),
+        });
 
-      const result = {
-        success: true,
-        symbol,
-        timeframe,
-        historicalData,
-        predictedData,
-        predictionMeta: {
-          direction: String(mlResponse.direction || getDirectionFromCandles(historicalData)).toUpperCase(),
-          confidence: normalizeConfidence(mlResponse.confidence),
-          currentPrice: round2(mlResponse.current_price),
-          targetPrice: round2(mlResponse.target_price),
-          processingTimeMs: Number(mlResponse.processing_time_ms) || 0,
-          steps: predictedData.length,
-        },
-        timestamp: new Date().toISOString(),
-      };
+        result = buildChartPredictionResult({
+          symbol,
+          timeframe,
+          historicalData,
+          predictionCandles: mlResponse.predicted_candles || [],
+          intervalSeconds,
+          direction: mlResponse.direction,
+          confidence: mlResponse.confidence,
+          currentPrice: mlResponse.current_price,
+          targetPrice: mlResponse.target_price,
+          processingTimeMs: mlResponse.processing_time_ms,
+          steps,
+        });
+      } catch (error) {
+        if (!shouldFallbackToSinglePrediction(error)) {
+          throw error;
+        }
+
+        const mlResponse = await callMl(
+          "/predict",
+          buildMlPredictionPayload({
+            symbol,
+            candles: recentCandles,
+            horizon: Number.parseInt(timeframe, 10) || 5,
+          })
+        );
+        const normalized = normalizeMlSinglePrediction(
+          mlResponse,
+          recentCandles[recentCandles.length - 1]?.close
+        );
+
+        result = buildChartPredictionResult({
+          symbol,
+          timeframe,
+          historicalData,
+          predictionCandles: [],
+          intervalSeconds,
+          direction: normalized.direction,
+          confidence: normalized.confidence,
+          currentPrice: normalized.currentPrice,
+          targetPrice: normalized.targetPrice,
+          processingTimeMs: normalized.processingTimeMs,
+          steps,
+        });
+      }
 
       await CacheService.set(cacheKey, result, 180);
       return result;

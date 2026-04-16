@@ -148,7 +148,7 @@ export function mergeTickIntoCandles({
   const bucket = getCandleBucket(nextTimestampMs, intervalMinutes);
   const candleTime = Math.floor(bucket / 1000);
 
-  if (enableLogs) {
+  if (enableLogs && import.meta.env.DEV) {
     console.log("TIMEFRAME:", intervalLabel);
     console.log("BUCKET:", new Date(bucket));
     console.log("PRICE:", nextPrice);
